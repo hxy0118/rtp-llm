@@ -6,6 +6,13 @@
         #include <string.h>
         #include <hip/hip_runtime.h>
 
+        // `warpSize` is a device-only builtin in HIP; in ROCm 7.x headers it is not
+        // usable from host code. These generated host launchers use `4 * warpSize`
+        // (num_warps=4), so define a host-side constant.
+        #if !defined(__HIP_DEVICE_COMPILE__)
+        #define warpSize 64
+        #endif
+
         // helpers to check for hip errors
         #define HIP_CHECK(ans) {{            gpuAssert((ans), __FILE__, __LINE__);        }}
         static inline void gpuAssert(hipError_t code, const char *file, int line) {{
