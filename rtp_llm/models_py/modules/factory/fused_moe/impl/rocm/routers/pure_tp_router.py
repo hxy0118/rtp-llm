@@ -119,13 +119,13 @@ class PureTpRouterBase(FusedMoeDataRouter):
     ) -> torch.Tensor:
         fused_expert_output = payload.fused_expert_output
         if self.tp_size > 1:
-            # all_reduce_output = all_reduce(fused_expert_output, group=Group.TP)
-            all_reduce_output = atrex.allreduce(
-                allreduce_in=fused_expert_output,
-                group=_get_group(Group.TP),
-                device_id=self.tp_rank
-            )
-        return all_reduce_output
+            fused_expert_output = all_reduce(fused_expert_output, group=Group.TP)
+            # fused_expert_output = atrex.allreduce(
+            #     allreduce_in=fused_expert_output,
+            #     group=_get_group(Group.TP),
+            #     device_id=self.tp_rank
+            # )
+        return fused_expert_output
 
 
 class PureTpRouterFusedQuant(PureTpRouterBase):
@@ -167,11 +167,11 @@ class PureTpRouterFusedQuant(PureTpRouterBase):
     ) -> torch.Tensor:
         fused_expert_output = payload.fused_expert_output
         if self.tp_size > 1:
-            # all_reduce_output = all_reduce(fused_expert_output, group=Group.TP)
-            all_reduce_output = atrex.allreduce(
-                allreduce_in=fused_expert_output,
-                group=_get_group(Group.TP),
-                device_id=self.tp_rank
-            )
-        return all_reduce_output
+            fused_expert_output = all_reduce(fused_expert_output, group=Group.TP)
+            # fused_expert_output = atrex.allreduce(
+            #     allreduce_in=fused_expert_output,
+            #     group=_get_group(Group.TP),
+            #     device_id=self.tp_rank
+            # )
+        return fused_expert_output
 
