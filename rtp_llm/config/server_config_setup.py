@@ -163,6 +163,8 @@ def _apply_auto_deepep_config(
             if is_decode:
                 use_deepep_low_latency = True
 
+    # TODO(wenhua): temporary disable deepep
+    use_deepep_moe = False
     # Set moe_config members directly
     moe_config.use_deepep_moe = use_deepep_moe
     moe_config.use_deepep_low_latency = use_deepep_low_latency
@@ -206,6 +208,8 @@ def set_parallelism_config(
 
     expected_ep = parallelism_config.tp_size * parallelism_config.dp_size
     need_ep = expected_ep > 1 and parallelism_config.ep_size == 1
+    # TODO(wenhua): temporary disable ep
+    need_ep = False
     if need_ep:
         parallelism_config.ep_size = expected_ep
     ffn_tp_size = parallelism_config.tp_size // parallelism_config.ffn_sp_size
