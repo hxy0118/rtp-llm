@@ -1,8 +1,10 @@
+import logging
 from typing import Dict, Optional
+
 import torch
 import torch.nn as nn
 
-from rtp_llm.models_py.distributed.collective_torch import Group, all_reduce, _get_group
+from rtp_llm.models_py.distributed.collective_torch import Group, _get_group, all_reduce
 from rtp_llm.models_py.modules.factory import LinearFactory
 from rtp_llm.models_py.modules.factory.attention.fmha_impl_base import FMHAImplBase
 from rtp_llm.ops import AttentionConfigs, HWKernelConfig, ParallelismConfig
@@ -84,13 +86,19 @@ class CausalAttention(nn.Module):
         output = self.o_proj(attn_output)
         if self.parallelism_config.tp_size > 1:
             if fmha_impl.attn_inputs.is_cuda_graph and device_type == DeviceType.ROCm:
-                from rtp_llm.models_py.distributed.trt_allreduce import allreduce as trtllm_allreduce
-                output = trtllm_allreduce(
-                    allreduce_in=output,
-                    group=_get_group(Group.TP),
-                    device_id=self.parallelism_config.tp_rank,
-                )
+                try:
+                    from rtp_llm.models_py.distributed.trt_allreduce import allreduce as trtllm_allreduce
+                    output = trtllm_allreduce(
+                        allreduce_in=output,
+                        group=_get_group(Group.TP),
+                        device_id=self.parallelism_config.tp_rank,
+                    )
+                except Exception as e:
+                    logging.warning(
+                        "trtllm_allreduce failed in graph mode, fallback to RCCL all_reduce: %s",
+                        e,
+                    )
+                    output = all_reduce(output, group=Group.TP)
             else:
                 output = all_reduce(output, group=Group.TP)
         return output
-
