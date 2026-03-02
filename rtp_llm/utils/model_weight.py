@@ -284,18 +284,11 @@ def sp_moe_neg1(
     use_stack_weight: bool,
     **kwargs: Any,
 ) -> torch.Tensor:
-    # TODO(sumu): refactor
-    logging.info("sp_moe_neg1 before: %s", t.shape)
-    if t.shape[-1] == 1:
-        return t
-
-    # logging.info("sp_moe_neg1: %s", use_stack_weight)
     if use_stack_weight:
         if ep > 1:
             tp_rank = (dp_rank * tp + tp_rank) // ep
             tp = tp * dp // ep
         t1 = torch.split(t, t.shape[-1] // tp, dim=-1)[tp_rank]
-        # logging.info("after: %s", t1.shape)
         if ep > 1:
             t1 = torch.split(t1, t1.shape[0] // ep, dim=0)[ep_rank]
         return t1
@@ -315,19 +308,16 @@ def sp_moe_w1(
     **kwargs: Any,
 ) -> torch.Tensor:
     # [expert_num, 2*n, k]
-    logging.info("sp_moe_w1 before: %s", t.shape)
     if use_stack_weight:
         if ep > 1:
             tp_rank = (dp_rank * tp + tp_rank) // ep
             tp = tp * dp // ep
         t1 = t.reshape([t.shape[0], 2, -1, t.shape[-1]])
-        logging.info("sp_moe_w1 t1 : %s", t1.shape)
         t2 = torch.split(t1, t1.shape[2] // tp, dim=2)[tp_rank]
         t2 = t2.reshape([t2.shape[0], -1, t2.shape[-1]])
         if ep > 1:
             t2 = torch.split(t2, t2.shape[0] // ep, dim=0)[ep_rank]
         t3 = t2.reshape([t2.shape[0], -1, t2.shape[-1]])
-        logging.info("sp_moe_w1 final : %s", t.shape)
         return t3
     else:
         return t
