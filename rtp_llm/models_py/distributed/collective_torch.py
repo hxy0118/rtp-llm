@@ -340,15 +340,14 @@ def exit_graph_capture_mode() -> None:
     global _in_graph_capture
     _in_graph_capture = False
 
-    # 新增：通知 atrex 完成 capture 后的 IPC 指针注册
+    # Notify TRT-LLM AllReduce Fusion to finalize IPC pointers after graph capture
     try:
-        from atrex.api.trt_allreduce import _atrex_comm_manager
-        if _atrex_comm_manager is not None and _atrex_comm_manager.initialized:
-            _atrex_comm_manager.dist_env.consume_capture()
+        from rtp_llm.models_py.distributed.trt_allreduce import consume_capture
+        consume_capture()
     except ImportError:
         pass
     except Exception as e:
-        logging.warning(f"Failed to call atrex consume_capture: {e}")
+        logging.warning(f"Failed to call trtllm consume_capture: {e}")
 
     logging.info(
         "Exited HIP Graph capture mode - collective ops restored to torch.distributed"

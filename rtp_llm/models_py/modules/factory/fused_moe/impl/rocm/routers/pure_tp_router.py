@@ -1,7 +1,6 @@
 from abc import abstractmethod
 from typing import Any, Optional, Tuple
 import aiter
-import atrex
 import torch
 
 from rtp_llm.models_py.distributed.collective_torch import Group, all_reduce, _get_group, is_cuda_graph
@@ -120,10 +119,11 @@ class PureTpRouterBase(FusedMoeDataRouter):
         fused_expert_output = payload.fused_expert_output
         if self.tp_size > 1:
             if is_cuda_graph():
-                fused_expert_output = atrex.allreduce(
+                from rtp_llm.models_py.distributed.trt_allreduce import allreduce as trtllm_allreduce
+                fused_expert_output = trtllm_allreduce(
                     allreduce_in=fused_expert_output,
                     group=_get_group(Group.TP),
-                    device_id=self.tp_rank
+                    device_id=self.tp_rank,
                 )
             else:
                 fused_expert_output = all_reduce(fused_expert_output, group=Group.TP)
@@ -169,10 +169,11 @@ class PureTpRouterFusedQuant(PureTpRouterBase):
         fused_expert_output = payload.fused_expert_output
         if self.tp_size > 1:
             if is_cuda_graph():
-                fused_expert_output = atrex.allreduce(
+                from rtp_llm.models_py.distributed.trt_allreduce import allreduce as trtllm_allreduce
+                fused_expert_output = trtllm_allreduce(
                     allreduce_in=fused_expert_output,
                     group=_get_group(Group.TP),
-                    device_id=self.tp_rank
+                    device_id=self.tp_rank,
                 )
             else:
                 fused_expert_output = all_reduce(fused_expert_output, group=Group.TP)

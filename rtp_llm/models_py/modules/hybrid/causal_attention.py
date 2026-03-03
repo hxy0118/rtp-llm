@@ -1,5 +1,4 @@
 from typing import Dict, Optional
-import atrex
 import torch
 import torch.nn as nn
 
@@ -84,11 +83,12 @@ class CausalAttention(nn.Module):
             attn_output = attn_output * torch.sigmoid(gate)
         output = self.o_proj(attn_output)
         if self.parallelism_config.tp_size > 1:
-            if fmha_impl.attn_inputs.is_cuda_graph:
-                output = atrex.allreduce(
+            if fmha_impl.attn_inputs.is_cuda_graph and device_type == DeviceType.ROCm:
+                from rtp_llm.models_py.distributed.trt_allreduce import allreduce as trtllm_allreduce
+                output = trtllm_allreduce(
                     allreduce_in=output,
                     group=_get_group(Group.TP),
-                    device_id=self.parallelism_config.tp_rank
+                    device_id=self.parallelism_config.tp_rank,
                 )
             else:
                 output = all_reduce(output, group=Group.TP)
