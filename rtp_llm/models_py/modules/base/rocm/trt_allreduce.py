@@ -295,7 +295,11 @@ def allreduce(
 
 def consume_capture() -> None:
     """Notify the TRT-LLM comm manager to finalize IPC pointers after graph capture."""
-    if _trtllm_comm_manager is not None and _trtllm_comm_manager.initialized:
+    if (
+        _trtllm_comm_manager is not None
+        and _trtllm_comm_manager.initialized
+        and not _trtllm_comm_manager.dist_env.disabled
+    ):
         _trtllm_comm_manager.dist_env._consume_capture()
 
 
