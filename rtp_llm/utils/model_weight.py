@@ -448,20 +448,17 @@ def get_sp_tensor(
     if head_num_kv == 1:
         ks = t[:, q_hidden : q_hidden + kv_hidden]
         vs = t[:, q_hidden + kv_hidden :]
-
-    if SCAFFOLD_QWEN35_MI355X:
-        kv_head_dim = kv_hidden // 2
-        k1 = t[:, q_hidden + 0*kv_head_dim: q_hidden + 1*kv_head_dim]
-        k2 = t[:, q_hidden + 1*kv_head_dim: q_hidden + 2*kv_head_dim]
-        v1 = t[:, q_hidden + 2*kv_head_dim: q_hidden + 3*kv_head_dim]
-        v2 = t[:, q_hidden + 3*kv_head_dim: q_hidden + 4*kv_head_dim]
-        
-        if tp_rank / tp == 0:
-            ks = torch.cat([k1, k1], dim=-1)
-            vs = torch.cat([v1, v1], dim=-1)
-        else:
-            ks = torch.cat([k2, k2], dim=-1)
-            vs = torch.cat([v2, v2], dim=-1)
+    elif SCAFFOLD_QWEN35_MI355X.duplicated_kv_head:
+        # kv_head_num < tp_size: duplicate kv heads across tp ranks
+        kv_head_dim = kv_hidden // head_num_kv
+        heads_per_kv = tp // head_num_kv
+        kv_head_idx = tp_rank // heads_per_kv
+        ks = t[:, q_hidden + kv_head_idx * kv_head_dim : q_hidden + (kv_head_idx + 1) * kv_head_dim]
+        vs = t[:, q_hidden + kv_hidden + kv_head_idx * kv_head_dim : q_hidden + kv_hidden + (kv_head_idx + 1) * kv_head_dim]
+        # duplicate to fill expected kv_hidden size
+        dup_factor = head_num_kv
+        ks = torch.cat([ks] * dup_factor, dim=-1)
+        vs = torch.cat([vs] * dup_factor, dim=-1)
     else:
         ks = sp_neg1(t[:, q_hidden : q_hidden + kv_hidden], tp, tp_rank)
         vs = sp_neg1(t[:, q_hidden + kv_hidden :], tp, tp_rank)
