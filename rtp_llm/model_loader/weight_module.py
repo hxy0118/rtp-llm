@@ -46,6 +46,9 @@ class WeightModule(ABC):
         super().__init_subclass__(**kwargs)
         cls._registry[cls.__name__] = cls
 
+    def get_components(self):
+        return [self]
+
     @property
     def lora_a_name(self):
         return f"{self.name}.{self.lora_A_suffix}"
@@ -662,8 +665,6 @@ class AtomicWeight(WeightModule):
     def _get_split_func(self):
         return W.gpt_style_tp_strategy[self.name]
 
-    def get_components(self):
-        return [self]
 
     @classmethod
     def support(
@@ -760,6 +761,17 @@ class CompositeWeight(WeightModule):
         )
 
     def get_components(self):
+        # Online quantization composites (e.g. LoadQuantPerChannelFp8Weight) must
+        # not be split: their _load_raw_tensor performs quantization at the
+        # composite level, and the scale is computed dynamically from the kernel
+        # (not loaded from checkpoint). Splitting would bypass quantization entirely.
+        if (
+            isinstance(self, QuantWeight)
+            and hasattr(self, "quant_config")
+            and self.quant_config
+            and not self.quant_config.is_quanted()
+        ):
+            return [self]
         res = []
         for sub_weight in self.sub_weights.values():
             res.extend(sub_weight.get_components())
