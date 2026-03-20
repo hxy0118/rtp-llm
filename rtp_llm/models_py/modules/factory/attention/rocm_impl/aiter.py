@@ -525,27 +525,29 @@ class AiterPrefillImplAsm(FMHAImplBase):
                         dump_tensor(v_continuous, f"layer{_li}.full_attn.prefill_v_cache_naive_b{batch_idx}", _li)
 
                         # --- vectorized layout extraction ---
-                        # ROCm ASM stores kv cache in vectorized layout:
-                        #   [numHeads, dimsPerHead/vs, mTokensPerBlock, vs] where vs=8 for bf16
-                        # cache shape: [num_blocks, 2, num_kv_heads, block_size, head_dim]
-                        # The last two dims (block_size, head_dim) are actually stored as
-                        #   (head_dim/vs, block_size, vs) in memory, but torch sees (block_size, head_dim).
-                        # To correctly extract token t from a block:
-                        #   view each block's per-head data as [head_dim/vs, block_size, vs]
+                        # ROCm ASM stores K and V caches in DIFFERENT vectorized layouts:
+                        #   K: [numHeads, dimsPerHead/vs, mTokensPerBlock, vs]
+                        #   V: [numHeads, mTokensPerBlock/vs, dimsPerHead, vs]
+                        # where vs = 16/element_size = 8 for bf16
                         num_kv_heads = cache.shape[2]
                         head_dim = cache.shape[4]
                         vec_size = 8  # bf16 vectorization size
+
+                        # K cache: reshape [block_size, head_dim] as [head_dim/vs, block_size, vs]
                         k_raw = cache[block_ids, 0]  # [nblk, num_kv_heads, block_size, head_dim]
-                        v_raw = cache[block_ids, 1]
-                        # Reshape to vectorized: [nblk, num_kv_heads, head_dim/vs, block_size, vs]
                         k_vec = k_raw.reshape(num_blocks_needed, num_kv_heads, head_dim // vec_size, block_size, vec_size)
-                        v_vec = v_raw.reshape(num_blocks_needed, num_kv_heads, head_dim // vec_size, block_size, vec_size)
-                        # Permute to [nblk, block_size, num_kv_heads, head_dim/vs, vs]
+                        # permute to [nblk, block_size, num_kv_heads, head_dim/vs, vs]
                         k_vec = k_vec.permute(0, 3, 1, 2, 4).reshape(num_blocks_needed * block_size, num_kv_heads, head_dim)
-                        v_vec = v_vec.permute(0, 3, 1, 2, 4).reshape(num_blocks_needed * block_size, num_kv_heads, head_dim)
                         k_vec = k_vec[:total_seq_len]
-                        v_vec = v_vec[:total_seq_len]
                         dump_tensor(k_vec, f"layer{_li}.full_attn.prefill_k_cache_b{batch_idx}", _li)
+
+                        # V cache: reshape [block_size, head_dim] as [block_size/vs, head_dim, vs]
+                        v_raw = cache[block_ids, 1]  # [nblk, num_kv_heads, block_size, head_dim]
+                        v_vec = v_raw.reshape(num_blocks_needed, num_kv_heads, block_size // vec_size, head_dim, vec_size)
+                        # permute to [nblk, num_kv_heads, block_size/vs, vs, head_dim]
+                        # then reshape to [nblk * block_size, num_kv_heads, head_dim]
+                        v_vec = v_vec.permute(0, 2, 4, 1, 3).reshape(num_blocks_needed * block_size, num_kv_heads, head_dim)
+                        v_vec = v_vec[:total_seq_len]
                         dump_tensor(v_vec, f"layer{_li}.full_attn.prefill_v_cache_b{batch_idx}", _li)
 
                         # Also dump raw block data for offline analysis
@@ -699,14 +701,20 @@ class AiterDecodeImplAsm(FMHAImplBase):
                     dump_tensor(v_naive, f"layer{_li}.full_attn.v_cache_naive_b{batch_idx}", _li)
 
                     # --- vectorized layout extraction ---
-                    # ROCm ASM stores kv cache in vectorized layout:
-                    #   [numHeads, dimsPerHead/vs, mTokensPerBlock, vs] where vs=8 for bf16
+                    # ROCm ASM stores K and V caches in DIFFERENT vectorized layouts:
+                    #   K: [numHeads, dimsPerHead/vs, mTokensPerBlock, vs]
+                    #   V: [numHeads, mTokensPerBlock/vs, dimsPerHead, vs]
+                    # where vs = 16/element_size = 8 for bf16
+
+                    # K cache: reshape [block_size, head_dim] as [head_dim/vs, block_size, vs]
                     k_raw = cache[block_ids, 0]  # [nblk, num_kv_heads, block_size, head_dim]
-                    v_raw = cache[block_ids, 1]
                     k_vec = k_raw.reshape(num_blocks_needed, num_kv_heads, head_dim // vec_size, block_size, vec_size)
-                    v_vec = v_raw.reshape(num_blocks_needed, num_kv_heads, head_dim // vec_size, block_size, vec_size)
                     k_continuous = k_vec.permute(0, 3, 1, 2, 4).reshape(num_blocks_needed * block_size, num_kv_heads, head_dim)[:seq_len]
-                    v_continuous = v_vec.permute(0, 3, 1, 2, 4).reshape(num_blocks_needed * block_size, num_kv_heads, head_dim)[:seq_len]
+
+                    # V cache: reshape [block_size, head_dim] as [block_size/vs, head_dim, vs]
+                    v_raw = cache[block_ids, 1]  # [nblk, num_kv_heads, block_size, head_dim]
+                    v_vec = v_raw.reshape(num_blocks_needed, num_kv_heads, block_size // vec_size, head_dim, vec_size)
+                    v_continuous = v_vec.permute(0, 2, 4, 1, 3).reshape(num_blocks_needed * block_size, num_kv_heads, head_dim)[:seq_len]
                     dump_tensor(k_continuous, f"layer{_li}.full_attn.k_cache_b{batch_idx}", _li)
                     dump_tensor(v_continuous, f"layer{_li}.full_attn.v_cache_b{batch_idx}", _li)
 
