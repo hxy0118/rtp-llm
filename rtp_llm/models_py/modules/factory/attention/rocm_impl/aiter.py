@@ -260,16 +260,37 @@ class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
 
         if _dump:
             import logging
+            _seq_lengths = getattr(fmha_params, 'sequence_lengths', None)
+            _seq_lengths_val = _seq_lengths.cpu().tolist() if _seq_lengths is not None else None
             logging.info(
-                f"[DUMP] layer{_li} pa_fwd_asm inputs: "
-                f"query.shape={list(query.shape)}, "
-                f"key_cache.shape={list(key_cache.shape)}, "
-                f"value_cache.shape={list(value_cache.shape)}, "
-                f"block_tables.shape={list(block_tables_id_device.shape)}, "
-                f"seq_lens={seq_lens.cpu().tolist()}, "
-                f"max_num_blocks={max_num_blocks}, "
-                f"tokens_per_block={self.tokens_per_block}"
+                f"[DUMP] layer{_li} pa_fwd_asm ALL params:\n"
+                f"  --- pa_fwd_asm positional args ---\n"
+                f"  [0] query: shape={list(query.shape)}, dtype={query.dtype}, "
+                f"stride={list(query.stride())}, contiguous={query.is_contiguous()}\n"
+                f"  [1] key_cache: shape={list(key_cache.shape)}, dtype={key_cache.dtype}, "
+                f"stride={list(key_cache.stride())}, contiguous={key_cache.is_contiguous()}\n"
+                f"  [2] value_cache: shape={list(value_cache.shape)}, dtype={value_cache.dtype}, "
+                f"stride={list(value_cache.stride())}, contiguous={value_cache.is_contiguous()}\n"
+                f"  [3] block_tables: shape={list(block_tables_id_device.shape)}, dtype={block_tables_id_device.dtype}, "
+                f"values={block_tables_id_device.cpu().tolist()}\n"
+                f"  [4] seq_lens: shape={list(seq_lens.shape)}, dtype={seq_lens.dtype}, "
+                f"values={seq_lens.cpu().tolist()}\n"
+                f"  [5] max_num_blocks={max_num_blocks}\n"
+                f"  [6] num_kv_splits=1\n"
+                f"  [7] K_QScale=None\n"
+                f"  [8] V_QScale=None\n"
+                f"  [9] out_: shape={list(query.shape)}, dtype={query.dtype}\n"
+                f"  [10] alibi_slopes=None\n"
+                f"  [11] logits_soft_cap=0\n"
+                f"  --- fmha_params extra fields ---\n"
+                f"  sequence_lengths(raw)={_seq_lengths_val}\n"
+                f"  max_seq_len={getattr(fmha_params, 'max_seq_len', 'N/A')}\n"
+                f"  enable_cuda_graph={getattr(fmha_params, 'enable_cuda_graph', 'N/A')}\n"
+                f"  --- attn op config ---\n"
+                f"  head_num={self.head_num}, head_dim={self.head_dim}, "
+                f"head_num_kv={self.head_num_kv}, tokens_per_block={self.tokens_per_block}"
             )
+            dump_tensor(query, f"layer{_li}.full_attn.pa_fwd_asm_query", _li)
 
         K_QScale = None
         V_QScale = None
