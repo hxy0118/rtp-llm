@@ -247,12 +247,30 @@ class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
     def forward(
         self, query: torch.Tensor, kv_cache: Optional[LayerKVCache], fmha_params
     ) -> torch.Tensor:
+        from rtp_llm.models_py.utils.debug import dump_tensor, dump_tensor_enabled
+        _li = getattr(self, '_dump_layer_idx', -1)
+        _dump = dump_tensor_enabled()
+
         seq_lens = fmha_params.seq_lens
 
         key_cache = kv_cache.kv_cache_base.select(1, 0)
         value_cache = kv_cache.kv_cache_base.select(1, 1)
         block_tables_id_device = fmha_params.kv_cache_block_id_device
         max_num_blocks = block_tables_id_device.shape[1]
+
+        if _dump:
+            import logging
+            logging.info(
+                f"[DUMP] layer{_li} pa_fwd_asm inputs: "
+                f"query.shape={list(query.shape)}, "
+                f"key_cache.shape={list(key_cache.shape)}, "
+                f"value_cache.shape={list(value_cache.shape)}, "
+                f"block_tables.shape={list(block_tables_id_device.shape)}, "
+                f"seq_lens={seq_lens.cpu().tolist()}, "
+                f"max_num_blocks={max_num_blocks}, "
+                f"tokens_per_block={self.tokens_per_block}"
+            )
+
         K_QScale = None
         V_QScale = None
         if (
@@ -264,8 +282,8 @@ class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
         out_ = torch.empty_like(query)
         output = aiter.pa_fwd_asm(
             query,  # [num_seqs, num_heads, head_size]
-            key_cache,  # [num_blocks, num_kv_heads, block_size, head_size/x, x]
-            value_cache,  # [num_blocks, num_kv_heads, block_size, head_size/x, x]
+            key_cache,  # [num_blocks, num_kv_heads, block_size, head_size]
+            value_cache,  # [num_blocks, num_kv_heads, block_size, head_size]
             block_tables_id_device,
             seq_lens,
             max_num_blocks,
@@ -276,6 +294,10 @@ class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
             None,
             0,
         )
+
+        if _dump:
+            dump_tensor(output, f"layer{_li}.full_attn.pa_fwd_asm_out", _li)
+
         output_reshaped = output.view(output.shape[0], -1)
         return output_reshaped
 
@@ -447,6 +469,10 @@ class AiterPrefillImplAsm(FMHAImplBase):
         qkv: torch.Tensor,
         kv_cache: Optional[LayerKVCache],
     ) -> torch.Tensor:
+        from rtp_llm.models_py.utils.debug import dump_tensor, dump_tensor_enabled
+        _li = getattr(self, '_dump_layer_idx', -1)
+        _dump = dump_tensor_enabled()
+
         # Apply RoPE and KV Cache processing
         if self.need_rope_kv_cache:
             fmha_input = self.rope_kvcache_impl.forward(qkv, kv_cache, self.rope_params)
@@ -457,6 +483,48 @@ class AiterPrefillImplAsm(FMHAImplBase):
         common.apply_write_cache_store(
             self.write_cache_store_impl, self.attn_inputs, kv_cache
         )
+
+        # --- dump kv cache after prefill write for prefill/decode consistency check ---
+        if _dump and kv_cache is not None and kv_cache.kv_cache_base is not None:
+            try:
+                cache = kv_cache.kv_cache_base
+                block_size = cache.shape[3] if cache.dim() == 5 else 0
+                block_table = self.fmha_params.kv_cache_block_id_device
+                input_lengths = self.fmha_params.cu_seqlens_q  # cu_seqlens: [batch+1]
+                prefix_lengths = self.fmha_params.prefix_lengths
+
+                import logging
+                logging.info(
+                    f"[DUMP] layer{_li} prefill: kv_cache_base.shape={list(cache.shape)}, "
+                    f"block_table.shape={list(block_table.shape) if block_table is not None else 'None'}, "
+                    f"kv_cache.seq_size_per_block={kv_cache.seq_size_per_block}"
+                )
+
+                if block_table is not None and cache.dim() == 5:
+                    # Reconstruct per-batch seq_lens from cu_seqlens
+                    batch_size = input_lengths.shape[0] - 1
+                    for batch_idx in range(batch_size):
+                        input_len = (input_lengths[batch_idx + 1] - input_lengths[batch_idx]).item()
+                        prefix_len = prefix_lengths[batch_idx].item() if (
+                            prefix_lengths is not None and prefix_lengths.numel() > 0
+                        ) else 0
+                        total_seq_len = input_len + prefix_len
+                        num_blocks_needed = (total_seq_len + block_size - 1) // block_size
+                        block_ids = block_table[batch_idx, :num_blocks_needed]
+                        k_blocks = cache[block_ids, 0]
+                        v_blocks = cache[block_ids, 1]
+                        k_blocks = k_blocks.permute(0, 2, 1, 3)
+                        v_blocks = v_blocks.permute(0, 2, 1, 3)
+                        k_continuous = k_blocks.reshape(-1, k_blocks.shape[2], k_blocks.shape[3])
+                        v_continuous = v_blocks.reshape(-1, v_blocks.shape[2], v_blocks.shape[3])
+                        k_continuous = k_continuous[:total_seq_len]
+                        v_continuous = v_continuous[:total_seq_len]
+                        dump_tensor(k_continuous, f"layer{_li}.full_attn.prefill_k_cache_b{batch_idx}", _li)
+                        dump_tensor(v_continuous, f"layer{_li}.full_attn.prefill_v_cache_b{batch_idx}", _li)
+                        dump_tensor(block_table, f"layer{_li}.full_attn.prefill_block_table", _li)
+            except Exception as e:
+                import logging
+                logging.warning(f"Failed to dump prefill kv cache: {e}")
 
         # Execute FMHA forward
         return self.fmha_impl.forward(fmha_input, kv_cache, self.fmha_params)
@@ -521,6 +589,9 @@ class AiterDecodeImplAsm(FMHAImplBase):
         self.need_rope_kv_cache = attn_configs.need_rope_kv_cache
         self.fmha_impl = AiterDecodeAttnOpAsm(attn_configs)
         self.rope_kvcache_impl = FusedRopeKVCacheDecodeOpAsm(attn_configs)
+        self.head_num = attn_configs.head_num
+        self.kv_head_num = attn_configs.kv_head_num
+        self.size_per_head = attn_configs.size_per_head
 
         # Store input info
         self.attn_inputs = attn_inputs
@@ -541,18 +612,81 @@ class AiterDecodeImplAsm(FMHAImplBase):
         qkv: torch.Tensor,
         kv_cache: Optional[LayerKVCache],
     ) -> torch.Tensor:
+        from rtp_llm.models_py.utils.debug import dump_tensor, dump_tensor_enabled
+        _li = getattr(self, '_dump_layer_idx', -1)
+        _dump = dump_tensor_enabled()
+
         # Apply RoPE and KV Cache processing
         if self.need_rope_kv_cache:
             fmha_input = self.rope_kvcache_impl.forward(qkv, kv_cache, self.rope_params)
         else:
             fmha_input = qkv
 
+        if _dump:
+            # fmha_input is query after rope: [batch, num_heads, head_dim]
+            dump_tensor(fmha_input, f"layer{_li}.full_attn.q_rope_out", _li)
+
         # Apply write cache store if needed
         common.apply_write_cache_store(
             self.write_cache_store_impl, self.attn_inputs, kv_cache
         )
+        if _dump and kv_cache is not None and kv_cache.kv_cache_base is not None:
+            try:
+                # --- dump block table, kv cache shape, seq_lens for consistency check ---
+                cache = kv_cache.kv_cache_base
+                block_size = cache.shape[3]
+                seq_lens = self.fmha_params.seq_lens  # [batch], already +1 in decode
+                block_table = self.fmha_params.kv_cache_block_id_device  # [batch, max_blocks]
 
+                import logging
+                logging.info(
+                    f"[DUMP] layer{_li} decode: kv_cache_base.shape={list(cache.shape)}, "
+                    f"block_table.shape={list(block_table.shape)}, "
+                    f"seq_lens={seq_lens.cpu().tolist()}, "
+                    f"block_table[0,:8]={block_table[0, :min(8, block_table.shape[1])].cpu().tolist()}, "
+                    f"kv_cache.seq_size_per_block={kv_cache.seq_size_per_block}"
+                )
+
+                # dump block table and seq_lens as tensors for offline comparison
+                dump_tensor(block_table, f"layer{_li}.full_attn.decode_block_table", _li)
+                dump_tensor(seq_lens, f"layer{_li}.full_attn.decode_seq_lens", _li)
+
+                for batch_idx in range(seq_lens.shape[0]):
+                    seq_len = seq_lens[batch_idx].item()
+                    num_blocks_needed = (seq_len + block_size - 1) // block_size
+                    block_ids = block_table[batch_idx, :num_blocks_needed]
+                    # Gather k and v from paged blocks
+                    # k_blocks: [num_blocks_needed, num_kv_heads, block_size, head_dim]
+                    k_blocks = cache[block_ids, 0]
+                    v_blocks = cache[block_ids, 1]
+                    # Transpose to [num_blocks_needed, block_size, num_kv_heads, head_dim]
+                    k_blocks = k_blocks.permute(0, 2, 1, 3)
+                    v_blocks = v_blocks.permute(0, 2, 1, 3)
+                    # Reshape to continuous: [num_blocks_needed * block_size, num_kv_heads, head_dim]
+                    k_continuous = k_blocks.reshape(-1, k_blocks.shape[2], k_blocks.shape[3])
+                    v_continuous = v_blocks.reshape(-1, v_blocks.shape[2], v_blocks.shape[3])
+                    # Trim to actual seq_len
+                    k_continuous = k_continuous[:seq_len]
+                    v_continuous = v_continuous[:seq_len]
+                    dump_tensor(k_continuous, f"layer{_li}.full_attn.k_cache_b{batch_idx}", _li)
+                    dump_tensor(v_continuous, f"layer{_li}.full_attn.v_cache_b{batch_idx}", _li)
+                    # Extract the last written token (current decode step) as k_rope_out and v
+                    last_token_pos = seq_len - 1
+                    last_k = k_continuous[last_token_pos:last_token_pos + 1]  # [1, num_kv_heads, head_dim]
+                    last_v = v_continuous[last_token_pos:last_token_pos + 1]
+                    dump_tensor(last_k, f"layer{_li}.full_attn.k_rope_out", _li)
+                    dump_tensor(last_v, f"layer{_li}.full_attn.v", _li)
+                    # --- dump prefill-written portion (tokens 0..seq_len-2) for prefill/decode consistency check ---
+                    if seq_len > 1:
+                        prefill_k = k_continuous[:seq_len - 1]
+                        prefill_v = v_continuous[:seq_len - 1]
+                        dump_tensor(prefill_k, f"layer{_li}.full_attn.prefill_k_in_decode_b{batch_idx}", _li)
+                        dump_tensor(prefill_v, f"layer{_li}.full_attn.prefill_v_in_decode_b{batch_idx}", _li)
+            except Exception as e:
+                import logging
+                logging.warning(f"Failed to extract kv cache for dump: {e}")
         # Execute FMHA forward
+        self.fmha_impl._dump_layer_idx = _li
         return self.fmha_impl.forward(fmha_input, kv_cache, self.fmha_params)
 
     def prepare_cuda_graph(self, attn_inputs: PyAttentionInputs):
