@@ -610,10 +610,10 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         # from [token * head, dim] -> [token, head * dim]
         attn_output = attn_output.reshape(-1, self.local_num_v_heads * self.head_v_dim)
         attn_output = self.out_proj(attn_output)
-        if dump_tensor_enabled():
-            dump_tensor(attn_output, f"layer{_li}.linear_attn.out_proj", _li)
         if self.parallelism_config.get_attn_tp_size() > 1:
             attn_output = all_reduce(attn_output, group=Group.TP)
+        if dump_tensor_enabled():
+            dump_tensor(attn_output, f"layer{_li}.linear_attn.out_proj", _li)
         return attn_output
 
 
