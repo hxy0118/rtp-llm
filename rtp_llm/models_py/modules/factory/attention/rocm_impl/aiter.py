@@ -352,7 +352,10 @@ class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
         num_kv_heads = self.head_num_kv
         num_seqs, num_heads, head_size = query.shape
         block_size = value_cache.shape[2]
-        if max_seq_len <= 16384 and (not using_fp8_kvcache):
+        # TODO(wenhua): avoid asd pa accuracy in qwen35
+        # if max_seq_len <= 16384 and (not using_fp8_kvcache):
+        output = torch.empty_like(query).view((num_seqs, num_heads, head_size))
+        if False:
             _PARTITION_SIZE_ROCM = 512
             max_num_partitions = (
                 max_seq_len + _PARTITION_SIZE_ROCM - 1
