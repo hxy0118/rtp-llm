@@ -294,6 +294,9 @@ class ModelLoader:
                     load_config=self._load_config,
                 )
                 for name, tensor in tensors.items():
+                    # Clone tensors to decouple from fastsafetensors' DMA buffer,
+                    # which may be reused/overwritten when loading subsequent shards.
+                    tensor = tensor.contiguous().clone()
                     if weight_info.layer_id is not None:
                         model_weights.set_layer_weight(
                             weight_info.layer_id, name, tensor
