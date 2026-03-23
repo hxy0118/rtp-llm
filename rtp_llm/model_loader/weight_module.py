@@ -761,16 +761,11 @@ class CompositeWeight(WeightModule):
         )
 
     def get_components(self):
-        # Online quantization composites (e.g. LoadQuantPerChannelFp8Weight) must
-        # not be split: their _load_raw_tensor performs quantization at the
-        # composite level, and the scale is computed dynamically from the kernel
-        # (not loaded from checkpoint). Splitting would bypass quantization entirely.
-        if (
-            isinstance(self, QuantWeight)
-            and hasattr(self, "quant_config")
-            and self.quant_config
-            and not self.quant_config.is_quanted()
-        ):
+        # QuantWeight composites (kernel + scale) must not be split:
+        # their _postprocess performs joint operations on kernel and scale
+        # (e.g. convert_fp8_weight_params), which would be bypassed if
+        # sub-weights are loaded independently.
+        if isinstance(self, QuantWeight):
             return [self]
         res = []
         for sub_weight in self.sub_weights.values():
