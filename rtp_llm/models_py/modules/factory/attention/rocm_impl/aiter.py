@@ -1063,6 +1063,9 @@ class AiterDecodeImplBase(FMHAImplBase):
             attn_inputs.kv_cache_kernel_block_id_host,
             attn_inputs.kv_cache_kernel_block_id_device,
         )
+        self.rope_params.update_kv_cache_offset(
+            attn_inputs.kv_cache_kernel_block_id_device
+        )
         if attn_inputs.kv_cache_kernel_block_id_device is not None:
             update_kv_cache_offset = getattr(
                 self.rope_params, "update_kv_cache_offset", None
