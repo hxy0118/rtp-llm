@@ -66,7 +66,21 @@ _is_rocm_runtime: bool = getattr(torch.version, "hip", None) is not None
 # Thread safety: protected by GIL in CPython. If nogil builds are adopted,
 # this global must be guarded by an explicit lock or replaced with thread-local storage.
 _hipgraph_allgather_output: Optional[torch.Tensor] = None
+def _is_hidden_size_supported_for_trtllm(hidden_size: int) -> bool:
+    """Check if hidden_size is supported by trtllm allreduce kernels.
 
+    In TP (Tensor Parallelism), allreduce happens after row-parallel linear
+    layers, so the input tensor's last dimension is the full hidden_size
+    (not TP-split). This matches the kernel's hidden_dim parameter which
+    is taken from allreduce_in.size(-1) in C++.
+    """
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+            ALLREDUCE_SUPPORTED_HIDDEN_SIZES,
+        )
+        return hidden_size in ALLREDUCE_SUPPORTED_HIDDEN_SIZES
+    except Exception:
+        return False
 
 def _get_nccl_dtype(tensor: torch.Tensor) -> int:
     nccl_dtype = _NCCL_DTYPE_MAP.get(tensor.dtype)
@@ -228,9 +242,9 @@ def _hipgraph_capture_all_reduce(
     tensor: torch.Tensor,
     process_group: torch.distributed.ProcessGroup,
 ) -> torch.Tensor:
-    # Only use trt_allreduce if already initialized; never attempt first-time
-    # initialization during graph capture (hipMalloc is forbidden).
-    if _is_trtllm_allreduce_ready():
+    # Only use trt_allreduce if already initialized and hidden_size is supported;
+    # never attempt first-time initialization during graph capture.
+    if _is_trtllm_allreduce_ready() and _is_hidden_size_supported_for_trtllm(tensor.shape[-1]):
         try:
             from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
                 allreduce as trtllm_allreduce,

@@ -450,6 +450,30 @@ class TestTrtAllReduceFusion(unittest.TestCase):
             batch_size=8, hidden_size=4096, dtype=torch.bfloat16,
         )
 
+    def test_pure_allreduce_hidden2560_ws2(self):
+        _launch_workers(
+            _worker_pure_allreduce, world_size=2,
+            batch_size=8, hidden_size=2560, dtype=torch.bfloat16,
+        )
+
+    def test_pure_allreduce_hidden5120_ws2(self):
+        _launch_workers(
+            _worker_pure_allreduce, world_size=2,
+            batch_size=8, hidden_size=5120, dtype=torch.bfloat16,
+        )
+
+    def test_pure_allreduce_hidden2560_fp16_ws2(self):
+        _launch_workers(
+            _worker_pure_allreduce, world_size=2,
+            batch_size=8, hidden_size=2560, dtype=torch.float16,
+        )
+
+    def test_pure_allreduce_hidden5120_fp16_ws2(self):
+        _launch_workers(
+            _worker_pure_allreduce, world_size=2,
+            batch_size=8, hidden_size=5120, dtype=torch.float16,
+        )
+
     # ------------------------------------------------------------------
     # Fused allreduce + residual + rmsnorm (bf16, no fp8)
     # ------------------------------------------------------------------
