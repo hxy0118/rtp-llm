@@ -172,25 +172,38 @@ class AiterPrefillAttnOp:
     def _reshape_kv_cache_vectorized(self, kv_cache_base):
         """Reshape kv_cache_base into 5D VECTORIZED_LAYOUT for mha_batch_prefill.
 
+        kv_cache_base is already shaped by C++ getLayerCache() as:
+            [kernel_block_num, 2, num_kv_heads, kernel_seq_size_per_block, head_dim]
+        or as a 2D flat tensor [block_num, flat_elems] when kernel/seq block sizes match.
+
         Returns (k_cache_5d, v_cache_5d):
             K: [num_blocks, num_kv_heads, head_dim/k_vector_size, page_size, k_vector_size]
             V: [num_blocks, num_kv_heads, page_size/k_vector_size, head_dim, k_vector_size]
         """
-        block_num = kv_cache_base.shape[0]
-        hk = self.head_num_kv
-        ps = self.tokens_per_block
-        hd = self.head_dim
-        expected_elems = 2 * hk * ps * hd
-        cache = kv_cache_base[:, :expected_elems].reshape(block_num, 2, hk, ps, hd)
-        k_cache_4d = cache[:, 0, :, :, :]  # [block_num, hk, ps, hd]
-        v_cache_4d = cache[:, 1, :, :, :]  # [block_num, hk, ps, hd]
+        if kv_cache_base.dim() == 5:
+            # Already reshaped by C++ side: [kernel_block_num, 2, kv_heads, page_size, head_dim]
+            block_num = kv_cache_base.shape[0]
+            ps = kv_cache_base.shape[3]
+            hd = kv_cache_base.shape[4]
+            k_cache_4d = kv_cache_base[:, 0, :, :, :]  # [block_num, hk, ps, hd]
+            v_cache_4d = kv_cache_base[:, 1, :, :, :]  # [block_num, hk, ps, hd]
+        else:
+            # 2D flat tensor: reshape using tokens_per_block
+            block_num = kv_cache_base.shape[0]
+            hk = self.head_num_kv
+            ps = self.tokens_per_block
+            hd = self.head_dim
+            expected_elems = 2 * hk * ps * hd
+            cache = kv_cache_base[:, :expected_elems].reshape(block_num, 2, hk, ps, hd)
+            k_cache_4d = cache[:, 0, :, :, :]  # [block_num, hk, ps, hd]
+            v_cache_4d = cache[:, 1, :, :, :]  # [block_num, hk, ps, hd]
 
         k_vector_size = 16 // kv_cache_base.element_size()
         k_cache = k_cache_4d.reshape(
-            block_num, hk, hd // k_vector_size, ps, k_vector_size
+            block_num, k_cache_4d.shape[1], hd // k_vector_size, ps, k_vector_size
         )
         v_cache = v_cache_4d.reshape(
-            block_num, hk, ps // k_vector_size, hd, k_vector_size
+            block_num, v_cache_4d.shape[1], ps // k_vector_size, hd, k_vector_size
         )
         return k_cache, v_cache
 
