@@ -1,5 +1,4 @@
 import logging
-import math
 from typing import Any, List, Optional
 
 import aiter
@@ -21,14 +20,6 @@ from rtp_llm.ops.compute_ops import (
     PyAttentionInputs,
     paged_attention_atrex,
 )
-
-try:
-    from aiter.ops.mha import mha_batch_prefill_func as _aiter_mha_batch_prefill
-
-    _HAS_MHA_BATCH_PREFILL = True
-except ImportError:
-    _HAS_MHA_BATCH_PREFILL = False
-
 
 # Pure Python implementation of FMHAParams
 class FMHAParams(ParamsBase):
@@ -169,44 +160,6 @@ class AiterPrefillAttnOp:
         )
         return self.fmha_params
 
-    def _reshape_kv_cache_vectorized(self, kv_cache_base):
-        """Reshape kv_cache_base into 5D VECTORIZED_LAYOUT for mha_batch_prefill.
-
-        kv_cache_base is already shaped by C++ getLayerCache() as:
-            [kernel_block_num, 2, num_kv_heads, kernel_seq_size_per_block, head_dim]
-        or as a 2D flat tensor [block_num, flat_elems] when kernel/seq block sizes match.
-
-        Returns (k_cache_5d, v_cache_5d):
-            K: [num_blocks, num_kv_heads, head_dim/k_vector_size, page_size, k_vector_size]
-            V: [num_blocks, num_kv_heads, page_size/k_vector_size, head_dim, k_vector_size]
-        """
-        if kv_cache_base.dim() == 5:
-            # Already reshaped by C++ side: [kernel_block_num, 2, kv_heads, page_size, head_dim]
-            block_num = kv_cache_base.shape[0]
-            ps = kv_cache_base.shape[3]
-            hd = kv_cache_base.shape[4]
-            k_cache_4d = kv_cache_base[:, 0, :, :, :]  # [block_num, hk, ps, hd]
-            v_cache_4d = kv_cache_base[:, 1, :, :, :]  # [block_num, hk, ps, hd]
-        else:
-            # 2D flat tensor: reshape using tokens_per_block
-            block_num = kv_cache_base.shape[0]
-            hk = self.head_num_kv
-            ps = self.tokens_per_block
-            hd = self.head_dim
-            expected_elems = 2 * hk * ps * hd
-            cache = kv_cache_base[:, :expected_elems].reshape(block_num, 2, hk, ps, hd)
-            k_cache_4d = cache[:, 0, :, :, :]  # [block_num, hk, ps, hd]
-            v_cache_4d = cache[:, 1, :, :, :]  # [block_num, hk, ps, hd]
-
-        k_vector_size = 16 // kv_cache_base.element_size()
-        k_cache = k_cache_4d.reshape(
-            block_num, k_cache_4d.shape[1], hd // k_vector_size, ps, k_vector_size
-        )
-        v_cache = v_cache_4d.reshape(
-            block_num, v_cache_4d.shape[1], ps // k_vector_size, hd, k_vector_size
-        )
-        return k_cache, v_cache
-
     def _split_qkv_fp8(self, qkv_fp8):
         """Split FP8 QKV buffer into separate Q, K, V tensors."""
         token_num = qkv_fp8.shape[0]
@@ -242,16 +195,25 @@ class AiterPrefillAttnOp:
             )
             return res.reshape(fmha_params.token_q_num, self.head_num * self.head_dim)
 
-        # Unified path: always use mha_batch_prefill from paged KV cache
-        if not _HAS_MHA_BATCH_PREFILL:
-            raise RuntimeError(
-                "mha_batch_prefill_func is not available. "
-                "Please install aiter >= 0.1.11 with mha_batch_prefill support."
-            )
+        # Unified path: use mha_batch_prefill from paged KV cache
+        device = q_tensor.device
 
-        k_cache, v_cache = self._reshape_kv_cache_vectorized(kv_cache.kv_cache_base)
+        # Extract K/V from 5D kv_cache_base: [block_num, 2, kv_heads, page_size, head_dim]
+        key_cache = kv_cache.kv_cache_base.select(1, 0)
+        value_cache = kv_cache.kv_cache_base.select(1, 1)
+
+        # Convert to vectorized layout for mha_batch_prefill
+        vec_size = 16 // key_cache.element_size()
+        kv_sizes = key_cache.shape
+        key_cache = key_cache.view(
+            kv_sizes[0], kv_sizes[1], kv_sizes[3] // vec_size, kv_sizes[2], vec_size
+        )
+        value_cache = value_cache.view(
+            kv_sizes[0], kv_sizes[1], kv_sizes[2] // vec_size, kv_sizes[3], vec_size
+        )
+
         block_table = fmha_params.kv_cache_block_id_device
-        cu_seqlens_q = fmha_params.cu_seqlens_q.to(q_tensor.device)
+        cu_seqlens_q = fmha_params.cu_seqlens_q.to(device)
 
         # prefix_lengths: default to zeros when no prefix (unified logic)
         batch_size = cu_seqlens_q.shape[0] - 1
@@ -259,34 +221,41 @@ class AiterPrefillAttnOp:
             fmha_params.prefix_lengths is not None
             and fmha_params.prefix_lengths.numel() > 0
         ):
-            prefix_lengths_device = fmha_params.prefix_lengths.to(q_tensor.device)
+            prefix_lengths_device = fmha_params.prefix_lengths.to(device)
         else:
             prefix_lengths_device = torch.zeros(
-                batch_size, dtype=torch.int32, device=q_tensor.device
+                batch_size, dtype=torch.int32, device=device
             )
 
         input_lengths = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
         seqlen_k = (prefix_lengths_device + input_lengths).to(torch.int32)
 
-        softmax_scale = 1.0 / math.sqrt(self.head_dim)
-        kv_indptr = cu_seqlens_q
-        kv_page_indices = torch.empty(0, dtype=torch.int32, device=q_tensor.device)
+        kv_indptr = torch.zeros(batch_size + 1, dtype=torch.int32, device=device)
+        kv_page_indices = torch.zeros(1, dtype=torch.int32, device=device)
 
-        res = _aiter_mha_batch_prefill(
+        q_descale = None
+        k_descale = None
+        v_descale = None
+        if key_cache.dtype in (torch.float8_e4m3fnuz, torch.float8_e4m3fn):
+            q_descale = torch.ones(1, dtype=torch.float32, device=device)
+            k_descale = torch.ones(1, dtype=torch.float32, device=device)
+            v_descale = torch.ones(1, dtype=torch.float32, device=device)
+
+        res = aiter.mha_batch_prefill_func(
             q_tensor,
-            k_cache,
-            v_cache,
+            key_cache,
+            value_cache,
             cu_seqlens_q,
             kv_indptr,
             kv_page_indices,
             fmha_params.max_seqlen_q,
             fmha_params.max_seqlen_k,
-            dropout_p=0.0,
-            softmax_scale=softmax_scale,
             causal=self.is_causal,
-            window_size=(-1, 0),
             block_table=block_table,
             seqlen_k=seqlen_k,
+            q_descale=q_descale,
+            k_descale=k_descale,
+            v_descale=v_descale,
         )
         return res.reshape(fmha_params.token_q_num, self.head_num * self.head_dim)
 
