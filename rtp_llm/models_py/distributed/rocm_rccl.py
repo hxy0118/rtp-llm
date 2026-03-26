@@ -254,8 +254,6 @@ def _pre_init_trtllm_allreduce() -> None:
         logging.warning("Pre-init trtllm_allreduce failed (non-fatal): %s", exc)
 
 def bootstrap_hipgraph_capture_rccl_comm_from_tp_group(
-
-def bootstrap_hipgraph_capture_rccl_comm_from_tp_group(
     tp_group: torch.distributed.ProcessGroup,
 ) -> None:
     global _rccl_comm_owned_by_python
@@ -380,6 +378,22 @@ def ensure_tp_rccl_comm_for_capture(is_tp_group: bool) -> None:
         )
 
 
+def _is_hidden_size_supported_for_trtllm(hidden_size: int) -> bool:
+    """Check if hidden_size is supported by trtllm allreduce kernels.
+
+    In TP (Tensor Parallelism), allreduce happens after row-parallel linear
+    layers, so the input tensor's last dimension is the full hidden_size
+    (not TP-split). This matches the kernel's hidden_dim parameter which
+    is taken from allreduce_in.size(-1) in C++.
+    """
+    try:
+        from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
+            ALLREDUCE_SUPPORTED_HIDDEN_SIZES,
+        )
+        return hidden_size in ALLREDUCE_SUPPORTED_HIDDEN_SIZES
+    except Exception:
+        return False
+
 def _is_trtllm_allreduce_ready() -> bool:
     """Check if trt_allreduce is already initialized and usable.
 
@@ -404,9 +418,13 @@ def hipgraph_capture_all_reduce(
     tensor: torch.Tensor,
     process_group: Optional[torch.distributed.ProcessGroup] = None,
 ) -> torch.Tensor:
-    # Try trt_allreduce first if already initialized; never attempt first-time
-    # initialization during graph capture (hipMalloc is forbidden).
-    if process_group is not None and _is_trtllm_allreduce_ready():
+    # Try trt_allreduce first if already initialized and hidden_size is supported;
+    # never attempt first-time initialization during graph capture (hipMalloc is forbidden).
+    if (
+        process_group is not None
+        and _is_hidden_size_supported_for_trtllm(tensor.shape[-1])
+        and _is_trtllm_allreduce_ready()
+    ):
         try:
             from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
                 allreduce as trtllm_allreduce,

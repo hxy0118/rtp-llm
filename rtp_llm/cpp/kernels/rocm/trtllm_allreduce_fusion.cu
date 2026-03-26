@@ -729,7 +729,9 @@ void allreduce_kernel_launcher_hd(AllReduceFusionParams<T> const &params,
                                   CommDeviceMeta<NRanks> const &meta,
                                   CommPtrs *cptrs, gpuStream_t stream) {
     switch (params.hidden_dim) {
+    case 5120: allreduce_kernel_launcher_<T, NRanks, 5120, QUANT_TYPE>(params, meta, cptrs, stream); return;
     case 4096: allreduce_kernel_launcher_<T, NRanks, 4096, QUANT_TYPE>(params, meta, cptrs, stream); return;
+    case 2560: allreduce_kernel_launcher_<T, NRanks, 2560, QUANT_TYPE>(params, meta, cptrs, stream); return;
     case 2048: allreduce_kernel_launcher_<T, NRanks, 2048, QUANT_TYPE>(params, meta, cptrs, stream); return;
     case 1024: allreduce_kernel_launcher_<T, NRanks, 1024, QUANT_TYPE>(params, meta, cptrs, stream); return;
     default: TORCH_CHECK(false, "Unsupported hidden_dim: ", params.hidden_dim);
