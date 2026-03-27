@@ -450,6 +450,12 @@ absl::Status NormalEngine::step() {
         }
     }
 
+    // tick() is called after schedule() but before process() to ensure the profiler
+    // is started before forward execution. This fixes a race condition where a
+    // gen_timeline request could be scheduled and its prefill executed before the
+    // profiler had a chance to start (configure() on gRPC thread, tick() on engine thread).
+    step_profiler_.tick();
+
     RTP_LLM_LOG_DEBUG(__PRETTY_FUNCTION__);
     int64_t      step_begin_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
     absl::Status status             = absl::OkStatus();
