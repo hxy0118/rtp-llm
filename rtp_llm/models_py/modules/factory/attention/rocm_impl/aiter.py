@@ -99,6 +99,8 @@ class FMHAParams(ParamsBase):
                 and self.graph_max_seq_len > 0
             ):
                 self.max_seq_len = self.graph_max_seq_len
+            elif sequence_lengths is not None:
+                self.max_seq_len = sequence_lengths.max().item() + 1
             else:
                 self.max_seq_len = input_lengths.max().item() + 1
 
@@ -119,6 +121,7 @@ class FMHAParams(ParamsBase):
         input_lengths,
         kv_cache_block_id_host=None,
         kv_cache_block_id_device=None,
+        sequence_lengths_plus_1_d=None,
     ):
         self.sequence_lengths = sequence_lengths
         self.input_lengths = input_lengths
@@ -126,7 +129,13 @@ class FMHAParams(ParamsBase):
         if kv_cache_block_id_device is not None:
             self.kv_cache_block_id_device = kv_cache_block_id_device
         if self.seq_lens is not None and self.sequence_lengths is not None:
-            self.seq_lens.copy_((self.sequence_lengths + 1).to(torch.device("cuda")))
+            if sequence_lengths_plus_1_d is not None:
+                # Use pre-computed value from C++ — no GPU temporary allocation.
+                self.seq_lens.copy_(sequence_lengths_plus_1_d)
+            else:
+                self.seq_lens.copy_(
+                    (self.sequence_lengths + 1).to(torch.device("cuda"))
+                )
             if (
                 self.enable_cuda_graph
                 and self.graph_max_seq_len is not None
@@ -418,6 +427,13 @@ def _run_triton_paged_attention(
     max_seq_len: int,
     num_kv_heads: int,
     context_partition_size: int,
+    # Optional pre-allocated buffers for CUDA Graph address stability.
+    # When provided, these are reused (re-initialized in-place) instead of
+    # allocating fresh tensors, keeping GPU addresses fixed across replays.
+    output: Optional[torch.Tensor] = None,
+    exp_sums: Optional[torch.Tensor] = None,
+    max_logits: Optional[torch.Tensor] = None,
+    temporary_output: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     key_cache = paged_kv_cache.select(1, 0)
     value_cache = paged_kv_cache.select(1, 1)
@@ -468,43 +484,49 @@ def _run_triton_paged_attention(
     ) // context_partition_size
     equivalent_query_group_size = query_length * query_group_size
 
-    output = torch.empty(
-        (num_seqs * query_length, num_query_heads, head_size),
-        dtype=output_dtype,
-        device=query.device,
-    )
-    exp_sums = torch.zeros(
-        (
-            num_seqs,
-            num_kv_heads,
-            max_context_partition_num,
-            equivalent_query_group_size,
-        ),
-        dtype=torch.float32,
-        device=query.device,
-    )
-    max_logits = torch.full(
-        (
-            num_seqs,
-            num_kv_heads,
-            max_context_partition_num,
-            equivalent_query_group_size,
-        ),
-        -float("inf"),
-        dtype=torch.float32,
-        device=query.device,
-    )
-    temporary_output = torch.zeros(
-        (
-            num_seqs,
-            num_kv_heads,
-            max_context_partition_num,
-            equivalent_query_group_size,
-            head_size,
-        ),
-        dtype=output_dtype,
-        device=query.device,
-    )
+    if output is not None:
+        # Re-initialize pre-allocated buffers in-place (recorded as memset in graph).
+        exp_sums.zero_()
+        max_logits.fill_(-float("inf"))
+        temporary_output.zero_()
+    else:
+        output = torch.empty(
+            (num_seqs * query_length, num_query_heads, head_size),
+            dtype=output_dtype,
+            device=query.device,
+        )
+        exp_sums = torch.zeros(
+            (
+                num_seqs,
+                num_kv_heads,
+                max_context_partition_num,
+                equivalent_query_group_size,
+            ),
+            dtype=torch.float32,
+            device=query.device,
+        )
+        max_logits = torch.full(
+            (
+                num_seqs,
+                num_kv_heads,
+                max_context_partition_num,
+                equivalent_query_group_size,
+            ),
+            -float("inf"),
+            dtype=torch.float32,
+            device=query.device,
+        )
+        temporary_output = torch.zeros(
+            (
+                num_seqs,
+                num_kv_heads,
+                max_context_partition_num,
+                equivalent_query_group_size,
+                head_size,
+            ),
+            dtype=output_dtype,
+            device=query.device,
+        )
 
     context_lengths = seq_lens.to(dtype=torch.int32, device=query.device)
     block_tables = block_tables_id_device.to(dtype=torch.int32, device=query.device)
@@ -639,12 +661,41 @@ class AiterDecodeAttnOpBase:
 
 
 class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
-    """Aiter decode attention operation using ASM paged attention."""
+    """Aiter decode attention operation using ASM paged attention.
+
+    Output buffer is pre-allocated in prepare() and reused across forward() calls.
+    This is critical for CUDA Graph correctness: torch.empty_like inside forward()
+    would be baked into the graph at capture time, and the allocation would not be
+    re-executed during replay.
+    """
+
+    def prepare(self, attn_inputs: PyAttentionInputs):
+        fmha_params = super().prepare(attn_inputs)
+        self._ensure_buffers(attn_inputs)
+        return fmha_params
+
+    def _ensure_buffers(self, attn_inputs: PyAttentionInputs):
+        """Pre-allocate output buffer sized for the worst case (max batch).
+
+        Called once at prepare() time. The buffer is pinned to a fixed GPU address
+        so that CUDA Graph replay can safely reuse it.
+        """
+        max_batch = attn_inputs.kv_cache_kernel_block_id_device.shape[0]
+        device = attn_inputs.kv_cache_kernel_block_id_device.device
+        num_heads = self.head_num
+        head_size = self.head_dim
+
+        self._output_buf = torch.empty(
+            (max_batch, num_heads, head_size),
+            dtype=torch.bfloat16,
+            device=device,
+        )
 
     def forward(
         self, query: torch.Tensor, kv_cache: Optional[LayerKVCache], fmha_params
     ) -> torch.Tensor:
         seq_lens = fmha_params.seq_lens
+        num_seqs = query.shape[0]
 
         key_cache = kv_cache.kv_cache_base.select(1, 0)
         value_cache = kv_cache.kv_cache_base.select(1, 1)
@@ -658,7 +709,7 @@ class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
         ):
             K_QScale = kv_cache.kv_scale_base.select(1, 0)
             V_QScale = kv_cache.kv_scale_base.select(1, 1)
-        out_ = torch.empty_like(query)
+        out_ = self._output_buf[:num_seqs]
         output = aiter.pa_fwd_asm(
             query,  # [num_seqs, num_heads, head_size]
             key_cache,  # [num_blocks, num_kv_heads, block_size, head_size/x, x]
@@ -678,7 +729,57 @@ class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
 
 
 class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
-    """Aiter decode attention operation using non-ASM paged attention."""
+    """Aiter decode attention operation using non-ASM paged attention.
+
+    Temporary buffers (output, tmp_output, exp_sums, max_logits) are pre-allocated
+    in prepare() and reused across forward() calls. This is critical for CUDA Graph
+    correctness: torch.empty/torch.ones inside forward() would be baked into the
+    graph at capture time and never re-executed during replay, leaving stale data
+    in the buffers and causing garbage attention output.
+    """
+
+    _PARTITION_SIZE = 256
+
+    def prepare(self, attn_inputs: PyAttentionInputs):
+        fmha_params = super().prepare(attn_inputs)
+        self._ensure_buffers(attn_inputs)
+        return fmha_params
+
+    def _ensure_buffers(self, attn_inputs: PyAttentionInputs):
+        """Pre-allocate temporary buffers sized for the worst case (max batch x max partitions).
+
+        Called once at prepare() time. The buffers are pinned to fixed GPU addresses
+        so that CUDA Graph replay can safely reuse them.
+        """
+        max_batch = attn_inputs.kv_cache_kernel_block_id_device.shape[0]
+        max_num_partitions = (
+            self.max_seq_len + self._PARTITION_SIZE - 1
+        ) // self._PARTITION_SIZE
+
+        device = attn_inputs.kv_cache_kernel_block_id_device.device
+        num_heads = self.head_num
+        head_size = self.head_dim
+
+        self._output_buf = torch.empty(
+            (max_batch, num_heads, head_size),
+            dtype=torch.bfloat16,
+            device=device,
+        )
+        self._tmp_output_buf = torch.empty(
+            (max_batch, num_heads, max_num_partitions, head_size),
+            dtype=torch.bfloat16,
+            device=device,
+        )
+        self._exp_sums_buf = torch.empty(
+            (max_batch, num_heads, max_num_partitions),
+            dtype=torch.float32,
+            device=device,
+        )
+        self._max_logits_buf = torch.empty(
+            (max_batch, num_heads, max_num_partitions),
+            dtype=torch.float32,
+            device=device,
+        )
 
     def forward(
         self, query: torch.Tensor, kv_cache: Optional[LayerKVCache], fmha_params
@@ -708,7 +809,6 @@ class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
         block_size = value_cache.shape[2]
         # TODO(wenhua): avoid asd pa accuracy in qwen35
         # if max_seq_len <= 16384 and (not using_fp8_kvcache):
-        output = torch.empty_like(query).view((num_seqs, num_heads, head_size))
         if False:
             _PARTITION_SIZE_ROCM = 512
             max_num_partitions = (
@@ -759,24 +859,21 @@ class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
                 max_seq_len + _PARTITION_SIZE_ROCM - 1
             ) // _PARTITION_SIZE_ROCM
             assert _PARTITION_SIZE_ROCM % block_size == 0
-            output = torch.empty_like(query).view((num_seqs, num_heads, head_size))
-            # init tmp_output
-            tmp_output = torch.empty(
-                size=(num_seqs, num_heads, max_num_partitions, head_size),
-                dtype=output.dtype,
-                device=output.device,
-            )
 
-            # init exp_sums
-            exp_sums = torch.empty(
-                size=(num_seqs, num_heads, max_num_partitions),
-                dtype=torch.float32,
-                device=output.device,
-            )
+            # Slice pre-allocated buffers to actual batch size and partition count.
+            # The underlying GPU memory addresses stay fixed for CUDA Graph replay.
+            output = self._output_buf[:num_seqs]
+            tmp_output = self._tmp_output_buf[:num_seqs, :, :max_num_partitions, :]
+            exp_sums = self._exp_sums_buf[:num_seqs, :, :max_num_partitions]
+            max_logits = self._max_logits_buf[:num_seqs, :, :max_num_partitions]
+
+            # Re-initialize max_logits every forward call.
+            # During CUDA Graph replay this becomes a recorded memset, ensuring
+            # no stale data from the previous iteration contaminates the reduce.
+            max_logits.fill_(1.0)
+
             fp8_out_scale = None
             cpa_fp8_out = False
-            # init max_logits
-            max_logits = torch.ones_like(exp_sums)
 
             kv_cache_dtype = "auto"
             k_scale = (
@@ -804,7 +901,7 @@ class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
                 block_size,
                 max_seq_len,
                 alibi_slopes,
-                kv_cache_dtype,  # kv_cache_dtype
+                kv_cache_dtype,
                 k_scale,
                 v_scale,
                 fp8_out_scale if cpa_fp8_out else None,
@@ -816,10 +913,58 @@ class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
 
 
 class AiterDecodeAttnOpTriton(AiterDecodeAttnOpBase):
+    """Aiter decode attention operation using Triton paged attention.
+
+    Temporary buffers are pre-allocated in prepare() and passed to
+    _run_triton_paged_attention() for CUDA Graph address stability.
+    """
 
     def __init__(self, attn_configs: AttentionConfigs):
         super().__init__(attn_configs)
         self.context_partition_size = 256
+
+    def prepare(self, attn_inputs: PyAttentionInputs):
+        fmha_params = super().prepare(attn_inputs)
+        self._ensure_buffers(attn_inputs)
+        return fmha_params
+
+    def _ensure_buffers(self, attn_inputs: PyAttentionInputs):
+        max_batch = attn_inputs.kv_cache_kernel_block_id_device.shape[0]
+        max_context_partition_num = (
+            self.max_seq_len + self.context_partition_size - 1
+        ) // self.context_partition_size
+
+        device = attn_inputs.kv_cache_kernel_block_id_device.device
+        num_query_heads = self.head_num
+        head_size = self.head_dim
+        query_group_size = num_query_heads // self.head_num_kv
+
+        self._output_buf = torch.empty(
+            (max_batch, num_query_heads, head_size),
+            dtype=torch.bfloat16,
+            device=device,
+        )
+        self._exp_sums_buf = torch.empty(
+            (max_batch, self.head_num_kv, max_context_partition_num, query_group_size),
+            dtype=torch.float32,
+            device=device,
+        )
+        self._max_logits_buf = torch.empty(
+            (max_batch, self.head_num_kv, max_context_partition_num, query_group_size),
+            dtype=torch.float32,
+            device=device,
+        )
+        self._tmp_output_buf = torch.empty(
+            (
+                max_batch,
+                self.head_num_kv,
+                max_context_partition_num,
+                query_group_size,
+                head_size,
+            ),
+            dtype=torch.bfloat16,
+            device=device,
+        )
 
     def support(self, attn_inputs: PyAttentionInputs) -> bool:
         return True
@@ -829,6 +974,10 @@ class AiterDecodeAttnOpTriton(AiterDecodeAttnOpBase):
     ) -> torch.Tensor:
         num_seqs = query.shape[0]
         paged_kv_cache = self.reshape_kv_cache(kv_cache.kv_cache_base)
+        max_context_partition_num = (
+            fmha_params.max_seq_len + self.context_partition_size - 1
+        ) // self.context_partition_size
+
         output = _run_triton_paged_attention(
             query,
             paged_kv_cache,
@@ -840,6 +989,14 @@ class AiterDecodeAttnOpTriton(AiterDecodeAttnOpBase):
             fmha_params.max_seq_len,
             self.head_num_kv,
             self.context_partition_size,
+            output=self._output_buf[:num_seqs],
+            exp_sums=self._exp_sums_buf[:num_seqs, :, :max_context_partition_num, :],
+            max_logits=self._max_logits_buf[
+                :num_seqs, :, :max_context_partition_num, :
+            ],
+            temporary_output=self._tmp_output_buf[
+                :num_seqs, :, :max_context_partition_num, :, :
+            ],
         )
         return output.view(num_seqs, -1)
 
@@ -1041,6 +1198,9 @@ class AiterDecodeImplBase(FMHAImplBase):
             attn_inputs.input_lengths,
             attn_inputs.kv_cache_kernel_block_id_host,
             attn_inputs.kv_cache_kernel_block_id_device,
+            sequence_lengths_plus_1_d=getattr(
+                attn_inputs, "sequence_lengths_plus_1_d", None
+            ),
         )
         self.rope_params.update_kv_cache_offset(
             attn_inputs.kv_cache_kernel_block_id_device
