@@ -229,7 +229,9 @@ def set_hipgraph_capture_nccl_comm(
     _hipgraph_allgather_outputs.clear()
     _pre_init_trtllm_allreduce()
 
-def _pre_init_trtllm_allreduce() -> None:
+def _pre_init_trtllm_allreduce(
+    tp_group: Optional[torch.distributed.ProcessGroup] = None,
+) -> None:
     """Pre-initialize trt_allreduce before graph capture.
 
     Must be called before entering graph capture mode so that
@@ -244,12 +246,13 @@ def _pre_init_trtllm_allreduce() -> None:
         from rtp_llm.models_py.modules.base.rocm.trt_allreduce import (
             ensure_trtllm_comm_initialized,
         )
-        # Use WORLD group as TP group when available; device_id from current device.
         if not torch.distributed.is_initialized():
             return
-        tp_group = torch.distributed.group.WORLD
+        if tp_group is None:
+            tp_group = torch.distributed.group.WORLD
         device_id = torch.cuda.current_device()
         ensure_trtllm_comm_initialized(group=tp_group, device_id=device_id)
+        logging.info("Pre-init trtllm_allreduce succeeded (device_id=%s)", device_id)
     except Exception as exc:
         logging.warning("Pre-init trtllm_allreduce failed (non-fatal): %s", exc)
 
@@ -332,6 +335,9 @@ def prepare_hipgraph_capture_rccl_comm_if_needed(
         return
     # IMPORTANT: bootstrap must happen before graph capture begins.
     bootstrap_hipgraph_capture_rccl_comm_from_tp_group(tp_group)
+    # Pre-initialize trt_allreduce with the correct TP group so that
+    # hipgraph_capture_all_reduce can use it during graph capture.
+    _pre_init_trtllm_allreduce(tp_group)
 
 
 def enter_hipgraph_capture_mode(
