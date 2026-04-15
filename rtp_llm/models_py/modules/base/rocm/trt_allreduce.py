@@ -60,6 +60,7 @@ class TrtllmDistEnv:
         self.rank = dist.get_rank(group=self.group)
         self.world_size = dist.get_world_size(group=self.group)
         self.handle = None
+        self.max_size_in_bytes = max_size_in_bytes
         self.disabled = False
         self._is_capturing = False
         self._is_captured = False
@@ -67,9 +68,11 @@ class TrtllmDistEnv:
         torch.cuda.set_device(self.device_id)
 
         if self.world_size == 1:
+            self.disabled = True
             return
 
         if self.world_size not in self._SUPPORTED_WORLD_SIZES:
+            self.disabled = True
             return
 
         try:
