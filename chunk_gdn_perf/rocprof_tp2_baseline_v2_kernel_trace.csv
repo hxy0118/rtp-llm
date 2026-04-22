@@ -1,0 +1,195 @@
+"Kind","Agent_Id","Queue_Id","Thread_Id","Dispatch_Id","Kernel_Id","Kernel_Name","Correlation_Id","Start_Timestamp","End_Timestamp","Private_Segment_Size","Group_Segment_Size","Workgroup_Size_X","Workgroup_Size_Y","Workgroup_Size_Z","Grid_Size_X","Grid_Size_Y","Grid_Size_Z"
+"KERNEL_DISPATCH",2,1,527496,1,61,"void (anonymous namespace)::elementwise_kernel_with_index<int, at::native::arange_cuda_out(c10::Scalar const&, c10::Scalar const&, c10::Scalar const&, at::Tensor&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}>(int, at::native::arange_cuda_out(c10::Scalar const&, c10::Scalar const&, c10::Scalar const&, at::Tensor&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}, function_traits<{lambda(long)#1}>::result_type*)",1,8324425727003301,8324425727008661,0,0,128,1,1,128,1,1
+"KERNEL_DISPATCH",2,1,527496,2,257,"void at::native::unrolled_elementwise_kernel<at::native::AUnaryFunctor<long, long, bool, at::native::(anonymous namespace)::CompareEqFunctor<long> >, std::array<char*, 2ul>, 16, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithoutCast, at::native::memory::StoreWithoutCast>(int, at::native::AUnaryFunctor<long, long, bool, at::native::(anonymous namespace)::CompareEqFunctor<long> >, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithoutCast, at::native::memory::StoreWithoutCast)",2,8324425763032403,8324425763037883,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,3,86,"__amd_rocclr_copyBuffer",3,8324425763208163,8324425763213243,0,0,512,1,1,512,1,1
+"KERNEL_DISPATCH",2,1,527496,4,430,"_ZN2at6native12_GLOBAL__N_143distribution_elementwise_grid_stride_kernelIfLi4EZNS0_9templates4cuda20normal_and_transformIN3c108BFloat16EfPNS_17CUDAGeneratorImplEZZZNS4_13normal_kernelIS9_EEvRKNS_10TensorBaseEddT_ENKUlvE_clEvENKUlvE2_clEvEUlfE_EEvRNS_18TensorIteratorBaseET1_T2_EUlP25hiprandStatePhilox4_32_10E0_ZNS1_27distribution_nullary_kernelIS7_f15HIP_vector_typeIfLj4EES9_SO_SH_EEvSJ_SL_RKT3_T4_EUlifE_EEvlNS_15PhiloxCudaStateESK_SL_",4,8324425765561276,8324425765996517,0,0,256,1,1,163840,1,1
+"KERNEL_DISPATCH",2,1,527496,5,434,"_ZN2at6native12_GLOBAL__N_143distribution_elementwise_grid_stride_kernelIfLi4EZNS0_9templates4cuda20normal_and_transformIffPNS_17CUDAGeneratorImplEZZZNS4_13normal_kernelIS7_EEvRKNS_10TensorBaseEddT_ENKUlvE_clEvENKUlvE0_clEvEUlfE_EEvRNS_18TensorIteratorBaseET1_T2_EUlP25hiprandStatePhilox4_32_10E0_ZNS1_27distribution_nullary_kernelIff15HIP_vector_typeIfLj4EES7_SM_SF_EEvSH_SJ_RKT3_T4_EUlifE_EEvlNS_15PhiloxCudaStateESI_SJ_",5,8324425765996517,8324425766391877,0,0,256,1,1,163840,1,1
+"KERNEL_DISPATCH",2,1,527496,6,568,"void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::NormTwoOps<float, float, float>, unsigned int, float, 4, 4> >(at::native::ReduceOp<float, at::native::NormTwoOps<float, float, float>, unsigned int, float, 4, 4>)",6,8324425781345165,8324425781642965,48,1,32,16,1,1048576,16,1
+"KERNEL_DISPATCH",2,1,527496,7,639,"void at::native::vectorized_elementwise_kernel<4, at::native::(anonymous namespace)::launch_clamp_scalar(at::TensorIteratorBase&, c10::Scalar, c10::Scalar, at::native::detail::ClampLimits)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::(anonymous namespace)::launch_clamp_scalar(at::TensorIteratorBase&, c10::Scalar, c10::Scalar, at::native::detail::ClampLimits)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>)",7,8324425817476867,8324425817484227,0,0,256,1,1,32768,1,1
+"KERNEL_DISPATCH",2,1,527496,8,1135,"void at::native::elementwise_kernel_manual_unroll<128, 4, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<float, float, float, at::native::binary_internal::DivFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<float, float, float, at::native::binary_internal::DivFunctor<float> > const&)::{lambda(int, bool)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<float, float, float, at::native::binary_internal::DivFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<float, float, float, at::native::binary_internal::DivFunctor<float> > const&)::{lambda(int, bool)#1})",8,8324425836344539,8324425836620859,0,0,128,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,9,1309,"void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)",9,8324425864590012,8324425864699612,0,0,256,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,10,430,"_ZN2at6native12_GLOBAL__N_143distribution_elementwise_grid_stride_kernelIfLi4EZNS0_9templates4cuda20normal_and_transformIN3c108BFloat16EfPNS_17CUDAGeneratorImplEZZZNS4_13normal_kernelIS9_EEvRKNS_10TensorBaseEddT_ENKUlvE_clEvENKUlvE2_clEvEUlfE_EEvRNS_18TensorIteratorBaseET1_T2_EUlP25hiprandStatePhilox4_32_10E0_ZNS1_27distribution_nullary_kernelIS7_f15HIP_vector_typeIfLj4EES9_SO_SH_EEvSJ_SL_RKT3_T4_EUlifE_EEvlNS_15PhiloxCudaStateESK_SL_",10,8324425864713853,8324425866426175,0,0,256,1,1,163840,1,1
+"KERNEL_DISPATCH",2,1,527496,11,1511,"_ZN2at6native12_GLOBAL__N_143distribution_elementwise_grid_stride_kernelIfLi4EZNS0_9templates4cuda21uniform_and_transformIN3c108BFloat16EfPNS_17CUDAGeneratorImplEZZZNS4_14uniform_kernelIS9_EEvRNS_18TensorIteratorBaseEddT_ENKUlvE_clEvENKUlvE2_clEvEUlfE_EEvSC_T1_T2_EUlP25hiprandStatePhilox4_32_10E0_ZNS1_27distribution_nullary_kernelIS7_f15HIP_vector_typeIfLj4EES9_SL_SG_EEvSC_SI_RKT3_T4_EUlifE_EEvlNS_15PhiloxCudaStateESH_SI_",11,8324425866806895,8324425866825415,0,0,256,1,1,163840,1,1
+"KERNEL_DISPATCH",2,1,527496,12,1581,"void at::native::vectorized_elementwise_kernel<8, at::native::launch_log_sigmoid_forward_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(c10::BFloat16)#1}, std::array<char*, 2ul> >(int, at::native::launch_log_sigmoid_forward_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(c10::BFloat16)#1}, std::array<char*, 2ul>)",12,8324425875874576,8324425875911296,0,0,256,1,1,131072,1,1
+"KERNEL_DISPATCH",2,1,527496,13,1511,"_ZN2at6native12_GLOBAL__N_143distribution_elementwise_grid_stride_kernelIfLi4EZNS0_9templates4cuda21uniform_and_transformIN3c108BFloat16EfPNS_17CUDAGeneratorImplEZZZNS4_14uniform_kernelIS9_EEvRNS_18TensorIteratorBaseEddT_ENKUlvE_clEvENKUlvE2_clEvEUlfE_EEvSC_T1_T2_EUlP25hiprandStatePhilox4_32_10E0_ZNS1_27distribution_nullary_kernelIS7_f15HIP_vector_typeIfLj4EES9_SL_SG_EEvSC_SI_RKT3_T4_EUlifE_EEvlNS_15PhiloxCudaStateESH_SI_",13,8324425875970496,8324425875988856,0,0,256,1,1,163840,1,1
+"KERNEL_DISPATCH",2,1,527496,14,1621,"void at::native::vectorized_elementwise_kernel<8, at::native::sigmoid_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#4}::operator()() const::{lambda(c10::BFloat16)#1}, std::array<char*, 2ul> >(int, at::native::sigmoid_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#4}::operator()() const::{lambda(c10::BFloat16)#1}, std::array<char*, 2ul>)",14,8324425887840761,8324425887856241,0,0,256,1,1,131072,1,1
+"KERNEL_DISPATCH",2,1,527496,15,430,"_ZN2at6native12_GLOBAL__N_143distribution_elementwise_grid_stride_kernelIfLi4EZNS0_9templates4cuda20normal_and_transformIN3c108BFloat16EfPNS_17CUDAGeneratorImplEZZZNS4_13normal_kernelIS9_EEvRKNS_10TensorBaseEddT_ENKUlvE_clEvENKUlvE2_clEvEUlfE_EEvRNS_18TensorIteratorBaseET1_T2_EUlP25hiprandStatePhilox4_32_10E0_ZNS1_27distribution_nullary_kernelIS7_f15HIP_vector_typeIfLj4EES9_SO_SH_EEvSJ_SL_RKT3_T4_EUlifE_EEvlNS_15PhiloxCudaStateESK_SL_",15,8324425887895601,8324425887904761,0,0,256,1,1,163840,1,1
+"KERNEL_DISPATCH",2,1,527496,16,86,"__amd_rocclr_copyBuffer",16,8324425887970881,8324425887974201,0,0,512,1,1,512,1,1
+"KERNEL_DISPATCH",2,1,527496,17,1737,"fused_l2norm_qk_kernel",17,8324426260804063,8324426261011623,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,18,1784,"void at::native::unrolled_elementwise_kernel<at::native::CUDAFunctor_add<long>, std::array<char*, 3ul>, 4, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithoutCast, at::native::memory::StoreWithoutCast>(int, at::native::CUDAFunctor_add<long>, std::array<char*, 3ul>, TrivialOffsetCalculator<2, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithoutCast, at::native::memory::StoreWithoutCast)",18,8324426286854203,8324426286858883,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,19,1865,"void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul> >(int, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul>)",19,8324426286944403,8324426286947643,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,20,1865,"void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul> >(int, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul>)",20,8324426286964523,8324426286967163,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,21,2302,"void at::native::vectorized_elementwise_kernel<4, at::native::BUnaryFunctor<long, long, long, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>, std::array<char*, 2ul> >(int, at::native::BUnaryFunctor<long, long, long, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>, std::array<char*, 2ul>)",21,8324426320785683,8324426320794083,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,22,86,"__amd_rocclr_copyBuffer",22,8324426320877923,8324426320884483,0,0,512,1,1,512,1,1
+"KERNEL_DISPATCH",2,1,527496,23,86,"__amd_rocclr_copyBuffer",23,8324426321219923,8324426321225883,0,0,512,1,1,1024,1,1
+"KERNEL_DISPATCH",2,1,527496,24,2334,"chunk_local_cumsum_scalar_kernel",24,8324426324138466,8324426324316026,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,25,2335,"chunk_scaled_dot_kkt_fwd_kernel",25,8324426592691118,8324426594549840,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,26,1865,"void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul> >(int, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul>)",26,8324426594549840,8324426594558960,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,27,1865,"void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul> >(int, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul>)",27,8324426594558960,8324426594564520,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,28,2302,"void at::native::vectorized_elementwise_kernel<4, at::native::BUnaryFunctor<long, long, long, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>, std::array<char*, 2ul> >(int, at::native::BUnaryFunctor<long, long, long, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>, std::array<char*, 2ul>)",28,8324426594564520,8324426594573040,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,29,86,"__amd_rocclr_copyBuffer",29,8324426594573040,8324426594579600,0,0,512,1,1,512,1,1
+"KERNEL_DISPATCH",2,1,527496,30,2336,"solve_tril_16x16_kernel",30,8324426600491157,8324426602027118,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,31,2337,"merge_16x16_to_64x64_inverse_kernel",31,8324426605602523,8324426606769924,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,32,2338,"recompute_w_u_fwd_kernel",32,8324427062406527,8324427068324813,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,33,86,"__amd_rocclr_copyBuffer",33,8324427068324813,8324427068332973,0,0,512,1,1,512,1,1
+"KERNEL_DISPATCH",2,1,527496,34,1865,"void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul> >(int, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul>)",34,8324427068418893,8324427068421853,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,35,1865,"void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul> >(int, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul>)",35,8324427068437653,8324427068440133,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,36,2302,"void at::native::vectorized_elementwise_kernel<4, at::native::BUnaryFunctor<long, long, long, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>, std::array<char*, 2ul> >(int, at::native::BUnaryFunctor<long, long, long, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>, std::array<char*, 2ul>)",36,8324427068470173,8324427068476973,0,0,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,37,2445,"void at::native::(anonymous namespace)::CatArrayBatchedCopy_contig<at::native::(anonymous namespace)::OpaqueType<8u>, unsigned int, 1, 128, 1>(at::native::(anonymous namespace)::OpaqueType<8u>*, at::native::(anonymous namespace)::CatArrInputTensorMetadata<at::native::(anonymous namespace)::OpaqueType<8u>, unsigned int, 128, 1>, at::native::(anonymous namespace)::TensorSizeStride<unsigned int, 4u>, int, unsigned int)",37,8324427080285207,8324427080289447,0,0,256,1,1,256,2,1
+"KERNEL_DISPATCH",2,1,527496,38,2548,"void rocprim::detail::single_scan_kernel<false, rocprim::detail::wrapped_scan_config<rocprim::default_config, long>, long const*, long*, std::plus<long>, long, long>(long const*, unsigned long, long, long*, std::plus<long>)",38,8324427088269256,8324427088275256,0,30720,256,1,1,256,1,1
+"KERNEL_DISPATCH",2,1,527496,39,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",39,8324427803606161,8324427814912734,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,40,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",40,8324427814912734,8324427815402094,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,41,2738,"chunk_fwd_kernel_o",41,8324428149602095,8324428156912903,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,42,1737,"fused_l2norm_qk_kernel",42,8324428157153703,8324428157329543,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,43,2334,"chunk_local_cumsum_scalar_kernel",43,8324428157329543,8324428157503063,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,44,2335,"chunk_scaled_dot_kkt_fwd_kernel",44,8324428157503063,8324428159301905,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,45,2336,"solve_tril_16x16_kernel",45,8324428159301905,8324428160845307,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,46,2337,"merge_16x16_to_64x64_inverse_kernel",46,8324428160845307,8324428162056709,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,47,2338,"recompute_w_u_fwd_kernel",47,8324428162056709,8324428167761835,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,48,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",48,8324428167761835,8324428178792968,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,49,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",49,8324428178792968,8324428179281889,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,50,2738,"chunk_fwd_kernel_o",50,8324428179281889,8324428186335777,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,51,1737,"fused_l2norm_qk_kernel",51,8324428186493978,8324428186678298,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,52,2334,"chunk_local_cumsum_scalar_kernel",52,8324428186678298,8324428186853778,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,53,2335,"chunk_scaled_dot_kkt_fwd_kernel",53,8324428186853778,8324428188655740,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,54,2336,"solve_tril_16x16_kernel",54,8324428188655740,8324428190203422,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,55,2337,"merge_16x16_to_64x64_inverse_kernel",55,8324428190203422,8324428191417663,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,56,2338,"recompute_w_u_fwd_kernel",56,8324428191417663,8324428197124630,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,57,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",57,8324428197124630,8324428208158803,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,58,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",58,8324428208158803,8324428208645764,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,59,2738,"chunk_fwd_kernel_o",59,8324428208645764,8324428215691892,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,60,1737,"fused_l2norm_qk_kernel",60,8324428215804612,8324428215978852,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,61,2334,"chunk_local_cumsum_scalar_kernel",61,8324428215978852,8324428216154253,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,62,2335,"chunk_scaled_dot_kkt_fwd_kernel",62,8324428216154253,8324428217958015,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,63,2336,"solve_tril_16x16_kernel",63,8324428217958030,8324428219503231,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,64,2337,"merge_16x16_to_64x64_inverse_kernel",64,8324428219503231,8324428220715272,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,65,2338,"recompute_w_u_fwd_kernel",65,8324428220715272,8324428226422719,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,66,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",66,8324428226422719,8324428237459772,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,67,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",67,8324428237459772,8324428237947412,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,68,2738,"chunk_fwd_kernel_o",68,8324428237947412,8324428245002461,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,69,1737,"fused_l2norm_qk_kernel",69,8324428245123661,8324428245298141,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,70,2334,"chunk_local_cumsum_scalar_kernel",70,8324428245298141,8324428245473381,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,71,2335,"chunk_scaled_dot_kkt_fwd_kernel",71,8324428245473381,8324428247274903,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,72,2336,"solve_tril_16x16_kernel",72,8324428247274903,8324428248822265,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,73,2337,"merge_16x16_to_64x64_inverse_kernel",73,8324428248822265,8324428250044227,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,74,2338,"recompute_w_u_fwd_kernel",74,8324428250044227,8324428255763073,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,75,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",75,8324428255763073,8324428266807527,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,76,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",76,8324428266807527,8324428267294567,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,77,2738,"chunk_fwd_kernel_o",77,8324428267294567,8324428274345096,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,78,1737,"fused_l2norm_qk_kernel",78,8324428274456816,8324428274631096,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,79,2334,"chunk_local_cumsum_scalar_kernel",79,8324428274631096,8324428274806696,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,80,2335,"chunk_scaled_dot_kkt_fwd_kernel",80,8324428274806696,8324428276602898,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,81,2336,"solve_tril_16x16_kernel",81,8324428276602898,8324428278148380,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,82,2337,"merge_16x16_to_64x64_inverse_kernel",82,8324428278148380,8324428279344981,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,83,2338,"recompute_w_u_fwd_kernel",83,8324428279345007,8324428285065813,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,84,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",84,8324428285065813,8324428296106346,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,85,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",85,8324428296106346,8324428296594466,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,86,2738,"chunk_fwd_kernel_o",86,8324428296594466,8324428303646235,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,87,1737,"fused_l2norm_qk_kernel",87,8324428303860995,8324428304037155,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,88,2334,"chunk_local_cumsum_scalar_kernel",88,8324428304037155,8324428304210355,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,89,2335,"chunk_scaled_dot_kkt_fwd_kernel",89,8324428304210355,8324428306005277,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,90,2336,"solve_tril_16x16_kernel",90,8324428306005277,8324428307551559,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,91,2337,"merge_16x16_to_64x64_inverse_kernel",91,8324428307551559,8324428308774561,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,92,2338,"recompute_w_u_fwd_kernel",92,8324428308774561,8324428314486567,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,93,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",93,8324428314486567,8324428325519701,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,94,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",94,8324428325519701,8324428326005341,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,95,2738,"chunk_fwd_kernel_o",95,8324428326005341,8324428333057069,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,96,1737,"fused_l2norm_qk_kernel",96,8324428333185990,8324428333360430,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,97,2334,"chunk_local_cumsum_scalar_kernel",97,8324428333360430,8324428333535990,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,98,2335,"chunk_scaled_dot_kkt_fwd_kernel",98,8324428333535990,8324428335335472,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,99,2336,"solve_tril_16x16_kernel",99,8324428335335472,8324428336879514,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,100,2337,"merge_16x16_to_64x64_inverse_kernel",100,8324428336879514,8324428338097435,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,101,2338,"recompute_w_u_fwd_kernel",101,8324428338097435,8324428343804162,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,102,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",102,8324428343804204,8324428361652135,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,103,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",103,8324428361652135,8324428362139375,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,104,2738,"chunk_fwd_kernel_o",104,8324428362139375,8324428369197103,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,105,1737,"fused_l2norm_qk_kernel",105,8324428370149105,8324428370326625,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,106,2334,"chunk_local_cumsum_scalar_kernel",106,8324428370326625,8324428370499785,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,107,2335,"chunk_scaled_dot_kkt_fwd_kernel",107,8324428370499785,8324428372303827,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,108,2336,"solve_tril_16x16_kernel",108,8324428372303827,8324428373849149,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,109,2337,"merge_16x16_to_64x64_inverse_kernel",109,8324428373849149,8324428375082830,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,110,2338,"recompute_w_u_fwd_kernel",110,8324428375082830,8324428380789677,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,111,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",111,8324428380789677,8324428391827410,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,112,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",112,8324428391827410,8324428392314531,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,113,2738,"chunk_fwd_kernel_o",113,8324428392314531,8324428399350299,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,114,1737,"fused_l2norm_qk_kernel",114,8324428399504260,8324428399678180,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,115,2334,"chunk_local_cumsum_scalar_kernel",115,8324428399678180,8324428399853740,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,116,2335,"chunk_scaled_dot_kkt_fwd_kernel",116,8324428399853740,8324428401653022,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,117,2336,"solve_tril_16x16_kernel",117,8324428401653022,8324428403197664,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,118,2337,"merge_16x16_to_64x64_inverse_kernel",118,8324428403197664,8324428404391465,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,119,2338,"recompute_w_u_fwd_kernel",119,8324428404391465,8324428410102832,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,120,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",120,8324428410102832,8324428421131725,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,121,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",121,8324428421131725,8324428421618606,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,122,2738,"chunk_fwd_kernel_o",122,8324428421618716,8324428428663084,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,123,1737,"fused_l2norm_qk_kernel",123,8324428428802324,8324428428976164,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,124,2334,"chunk_local_cumsum_scalar_kernel",124,8324428428976164,8324428429151684,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,125,2335,"chunk_scaled_dot_kkt_fwd_kernel",125,8324428429151684,8324428430950846,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,126,2336,"solve_tril_16x16_kernel",126,8324428430950846,8324428432494728,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,127,2337,"merge_16x16_to_64x64_inverse_kernel",127,8324428432494728,8324428433728410,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,128,2338,"recompute_w_u_fwd_kernel",128,8324428433728410,8324428439431776,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,129,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",129,8324428439431776,8324428450474870,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,130,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",130,8324428450474870,8324428450961430,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,131,2738,"chunk_fwd_kernel_o",131,8324428450961430,8324428458003519,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,132,1737,"fused_l2norm_qk_kernel",132,8324428458130639,8324428458304399,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,133,2334,"chunk_local_cumsum_scalar_kernel",133,8324428458304399,8324428458479559,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,134,2335,"chunk_scaled_dot_kkt_fwd_kernel",134,8324428458479559,8324428460272681,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,135,2336,"solve_tril_16x16_kernel",135,8324428460272681,8324428461816123,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,136,2337,"merge_16x16_to_64x64_inverse_kernel",136,8324428461816123,8324428463057085,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,137,2338,"recompute_w_u_fwd_kernel",137,8324428463057085,8324428468771851,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,138,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",138,8324428468771851,8324428479811985,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,139,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",139,8324428479811985,8324428480299945,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,140,2738,"chunk_fwd_kernel_o",140,8324428480299945,8324428487345994,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,141,1737,"fused_l2norm_qk_kernel",141,8324428487471594,8324428487645514,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,142,2334,"chunk_local_cumsum_scalar_kernel",142,8324428487645514,8324428487820714,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,143,2335,"chunk_scaled_dot_kkt_fwd_kernel",143,8324428487820714,8324428489624236,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,144,2336,"solve_tril_16x16_kernel",144,8324428489624328,8324428491168769,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,145,2337,"merge_16x16_to_64x64_inverse_kernel",145,8324428491168769,8324428492347090,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,146,2338,"recompute_w_u_fwd_kernel",146,8324428492347090,8324428498055417,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,147,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",147,8324428498055417,8324428509088190,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,148,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",148,8324428509088190,8324428509575031,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,149,2738,"chunk_fwd_kernel_o",149,8324428509574964,8324428516618412,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,150,1737,"fused_l2norm_qk_kernel",150,8324428516745599,8324428516926559,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,151,2334,"chunk_local_cumsum_scalar_kernel",151,8324428516926559,8324428517101720,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,152,2335,"chunk_scaled_dot_kkt_fwd_kernel",152,8324428517101720,8324428518895322,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,153,2336,"solve_tril_16x16_kernel",153,8324428518895322,8324428520440764,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,154,2337,"merge_16x16_to_64x64_inverse_kernel",154,8324428520440764,8324428521648685,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,155,2338,"recompute_w_u_fwd_kernel",155,8324428521648685,8324428527351812,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,156,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",156,8324428527351812,8324428538400985,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,157,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",157,8324428538400985,8324428538889146,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,158,2738,"chunk_fwd_kernel_o",158,8324428538889145,8324428545929193,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,159,1737,"fused_l2norm_qk_kernel",159,8324428546051394,8324428546225595,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,160,2334,"chunk_local_cumsum_scalar_kernel",160,8324428546225595,8324428546400875,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,161,2335,"chunk_scaled_dot_kkt_fwd_kernel",161,8324428546400875,8324428548195557,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,162,2336,"solve_tril_16x16_kernel",162,8324428548195557,8324428549738119,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,163,2337,"merge_16x16_to_64x64_inverse_kernel",163,8324428549738119,8324428550960120,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,164,2338,"recompute_w_u_fwd_kernel",164,8324428550959903,8324428556668189,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,165,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",165,8324428556668189,8324428567691522,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,166,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",166,8324428567691522,8324428568179042,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,167,2738,"chunk_fwd_kernel_o",167,8324428568179042,8324428575215651,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,168,1737,"fused_l2norm_qk_kernel",168,8324428575379051,8324428575552891,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,169,2334,"chunk_local_cumsum_scalar_kernel",169,8324428575552891,8324428575728011,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,170,2335,"chunk_scaled_dot_kkt_fwd_kernel",170,8324428575728011,8324428577525533,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,171,2336,"solve_tril_16x16_kernel",171,8324428577525533,8324428579072255,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,172,2337,"merge_16x16_to_64x64_inverse_kernel",172,8324428579072255,8324428580298977,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,173,2338,"recompute_w_u_fwd_kernel",173,8324428580298977,8324428586019063,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,174,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",174,8324428586019063,8324428597056237,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,175,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",175,8324428597056237,8324428597544397,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,176,2738,"chunk_fwd_kernel_o",176,8324428597544397,8324428604591245,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,177,1737,"fused_l2norm_qk_kernel",177,8324428604729526,8324428604903406,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,178,2334,"chunk_local_cumsum_scalar_kernel",178,8324428604903406,8324428605078766,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,179,2335,"chunk_scaled_dot_kkt_fwd_kernel",179,8324428605078766,8324428606886088,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,180,2336,"solve_tril_16x16_kernel",180,8324428606886088,8324428608432130,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,181,2337,"merge_16x16_to_64x64_inverse_kernel",181,8324428608432130,8324428609671972,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,182,2338,"recompute_w_u_fwd_kernel",182,8324428609671972,8324428615383418,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,183,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",183,8324428615383357,8324428626411730,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,184,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",184,8324428626411730,8324428626899170,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,185,2738,"chunk_fwd_kernel_o",185,8324428626899170,8324428633935338,0,32768,256,1,1,512,1024,32
+"KERNEL_DISPATCH",2,1,527496,186,1737,"fused_l2norm_qk_kernel",186,8324428634064379,8324428634239419,0,0,128,1,1,4194304,1,1
+"KERNEL_DISPATCH",2,1,527496,187,2334,"chunk_local_cumsum_scalar_kernel",187,8324428634239419,8324428634415219,0,0,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,188,2335,"chunk_scaled_dot_kkt_fwd_kernel",188,8324428634415219,8324428636214421,0,8192,512,1,1,524288,32,1
+"KERNEL_DISPATCH",2,1,527496,189,2336,"solve_tril_16x16_kernel",189,8324428636214421,8324428637760623,0,0,64,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,190,2337,"merge_16x16_to_64x64_inverse_kernel",190,8324428637760623,8324428638981984,0,2048,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,191,2338,"recompute_w_u_fwd_kernel",191,8324428638981984,8324428644699511,0,16384,256,1,1,262144,32,1
+"KERNEL_DISPATCH",2,1,527496,192,2569,"chunk_gated_delta_rule_fwd_kernel_h_blockdim64",192,8324428644699511,8324428655745484,0,40960,256,1,1,1024,32,1
+"KERNEL_DISPATCH",2,1,527496,193,2724,"void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul> >(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)",193,8324428655745484,8324428656232205,0,0,256,1,1,16777216,1,1
+"KERNEL_DISPATCH",2,1,527496,194,2738,"chunk_fwd_kernel_o",194,8324428656232205,8324428663271573,0,32768,256,1,1,512,1024,32

@@ -1,0 +1,4 @@
+core-python*
+core.*
+__pycache__/
+*.pyc
