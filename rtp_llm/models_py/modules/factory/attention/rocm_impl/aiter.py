@@ -307,7 +307,7 @@ class AiterPrefillAttnOp:
             )
         key_packed = torch.cat(key_packed_list, dim=0)
         value_packed = torch.cat(value_packed_list, dim=0)
-        print("flash attn varlen func----------",flush=True)
+        print("flash attn varlen func----------", flush=True)
         res = aiter.flash_attn_varlen_func(
             q_tensor,
             key_packed,
@@ -701,6 +701,15 @@ class AiterDecodeAttnOpAsm(AiterDecodeAttnOpBase):
 class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
     """Aiter decode attention operation using non-ASM paged attention."""
 
+    _default_scale: Optional[torch.Tensor] = None
+
+    def _get_default_scale(self, query: torch.Tensor) -> torch.Tensor:
+        if self._default_scale is None:
+            self._default_scale = torch.tensor(
+                1.0, device=query.device, dtype=query.dtype
+            )
+        return self._default_scale
+
     def forward(
         self, query: torch.Tensor, kv_cache: Optional[LayerKVCache], fmha_params
     ) -> torch.Tensor:
@@ -728,7 +737,7 @@ class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
         num_seqs, num_heads, head_size = query.shape
         block_size = value_cache.shape[2]
         output = self._get_output(query).view((num_seqs, num_heads, head_size))
-        if max_seq_len <= 16384 and (not using_fp8_kvcache):
+        if max_seq_len <= 16384 and (not using_fp8_kvcache) and head_size <= 128:
             _PARTITION_SIZE_ROCM = 512
             max_num_partitions = (
                 max_seq_len + _PARTITION_SIZE_ROCM - 1
@@ -810,16 +819,9 @@ class AiterDecodeAttnOpNonAsm(AiterDecodeAttnOpBase):
             max_logits = torch.ones_like(exp_sums)
 
             kv_cache_dtype = "auto"
-            k_scale = (
-                K_QScale
-                if kv_cache and K_QScale is not None
-                else torch.tensor(1.0, device=query.device, dtype=query.dtype)
-            )
-            v_scale = (
-                V_QScale
-                if kv_cache and V_QScale is not None
-                else torch.tensor(1.0, device=query.device, dtype=query.dtype)
-            )
+            default_scale = self._get_default_scale(query)
+            k_scale = K_QScale if kv_cache and K_QScale is not None else default_scale
+            v_scale = V_QScale if kv_cache and V_QScale is not None else default_scale
             aiter.paged_attention_rocm(
                 output,
                 exp_sums,
