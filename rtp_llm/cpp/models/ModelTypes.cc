@@ -8,9 +8,11 @@ void tpSyncModelInputs(GptModelInputs& inputs, const ParallelismConfig& parallel
     if (parallelism_config.tp_size <= 1) {
         return;
     }
-    const size_t shape_hints_size = GptModelInputIndex::gptModelInputLength;
-    auto         shape_hints_t    = torch::empty({(int64_t)shape_hints_size}, torch::kInt32).pin_memory();
-    auto         shape_hints_ptr  = shape_hints_t.data_ptr<int32_t>();
+    const size_t                      shape_hints_size = GptModelInputIndex::gptModelInputLength;
+    static thread_local torch::Tensor cached_shape_hints =
+        torch::empty({(int64_t)shape_hints_size}, torch::kInt32).pin_memory();
+    auto shape_hints_t                               = cached_shape_hints;
+    auto shape_hints_ptr                             = shape_hints_t.data_ptr<int32_t>();
     shape_hints_ptr[GptModelInputIndex::comboTokens] = inputs.combo_tokens.defined() ? inputs.combo_tokens.numel() : 0;
     shape_hints_ptr[GptModelInputIndex::inputLengths] =
         inputs.input_lengths.defined() ? inputs.input_lengths.numel() : 0;
@@ -260,12 +262,17 @@ void tpSyncModelInputs(GptModelInputs& inputs, const ParallelismConfig& parallel
 
     bool is_root = parallelism_config.tp_rank == 0;
 
-    // Allocate one packed buffer per device type.
-    // CPU buffer uses pinned memory (required by NCCL for host-side broadcast).
+    // Reuse packed buffers across calls to avoid repeated pin_memory() allocation.
+    static thread_local torch::Tensor cached_cpu_packed;
+    static thread_local torch::Tensor cached_gpu_packed;
+
     torch::Tensor cpu_packed, gpu_packed;
 
     if (cpu_total_bytes > 0) {
-        cpu_packed = torch::empty({cpu_total_bytes}, torch::kUInt8).pin_memory();
+        if (!cached_cpu_packed.defined() || cached_cpu_packed.nbytes() < cpu_total_bytes) {
+            cached_cpu_packed = torch::empty({cpu_total_bytes}, torch::kUInt8).pin_memory();
+        }
+        cpu_packed = cached_cpu_packed.slice(0, 0, cpu_total_bytes);
         if (is_root) {
             auto* base = static_cast<uint8_t*>(cpu_packed.data_ptr());
             for (auto& e : cpu_entries) {
@@ -276,7 +283,11 @@ void tpSyncModelInputs(GptModelInputs& inputs, const ParallelismConfig& parallel
     }
 
     if (gpu_total_bytes > 0) {
-        gpu_packed = torch::empty({gpu_total_bytes}, torch::TensorOptions(torch::kUInt8).device(torch::kCUDA));
+        if (!cached_gpu_packed.defined() || cached_gpu_packed.nbytes() < gpu_total_bytes) {
+            cached_gpu_packed =
+                torch::empty({gpu_total_bytes}, torch::TensorOptions(torch::kUInt8).device(torch::kCUDA));
+        }
+        gpu_packed = cached_gpu_packed.slice(0, 0, gpu_total_bytes);
         if (is_root) {
             for (auto& e : gpu_entries) {
                 auto contig    = e.tensor->contiguous();

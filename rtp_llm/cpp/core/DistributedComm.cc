@@ -1,4 +1,5 @@
 #include "rtp_llm/cpp/core/DistributedComm.h"
+#include "rtp_llm/cpp/core/ExecOps.h"
 #include "rtp_llm/cpp/utils/Logger.h"
 
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
@@ -114,17 +115,29 @@ void c10dBroadcast(const BroadcastParams& params) {
     }
 
     DeviceGuard guard(entry.device_id);
-    for (auto& buffer : params.buffers) {
+
+    std::vector<at::Tensor> gpu_bufs;
+    std::vector<size_t>     cpu_indices;
+    gpu_bufs.reserve(params.buffers.size());
+
+    for (size_t i = 0; i < params.buffers.size(); ++i) {
+        const auto&             buffer  = params.buffers[i];
         bool                    on_cpu  = !buffer.is_cuda();
         at::Tensor              gpu_buf = on_cpu ? buffer.to(at::Device(at::kCUDA, entry.device_id), true) : buffer;
         std::vector<at::Tensor> tensors = {gpu_buf};
         c10d::BroadcastOptions  opts;
         opts.rootRank = params.root;
-        auto work     = entry.pg->broadcast(tensors, opts);
-        work->wait();
+        entry.pg->broadcast(tensors, opts);
+        gpu_bufs.push_back(tensors[0]);
         if (on_cpu) {
-            buffer.copy_(tensors[0]);
+            cpu_indices.push_back(i);
         }
+    }
+
+    cudaSyncAndCheck();
+
+    for (size_t idx : cpu_indices) {
+        const_cast<at::Tensor&>(params.buffers[idx]).copy_(gpu_bufs[idx]);
     }
 }
 
