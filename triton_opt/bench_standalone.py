@@ -33,6 +33,23 @@ def safe_exp(x):
     return exp(tl.where(x <= 0, x, float("-inf")))
 
 
+def prepare_lens(cu_seqlens):
+    return cu_seqlens[1:] - cu_seqlens[:-1]
+
+
+def prepare_chunk_indices(cu_seqlens, chunk_size):
+    indices = torch.cat(
+        [torch.arange(n) for n in triton.cdiv(prepare_lens(cu_seqlens), chunk_size).tolist()]
+    )
+    return torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(cu_seqlens)
+
+
+def prepare_chunk_offsets(cu_seqlens, chunk_size):
+    return torch.cat(
+        [cu_seqlens.new_tensor([0]), triton.cdiv(prepare_lens(cu_seqlens), chunk_size)]
+    ).cumsum(-1)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Section 2: Shared kernels (cumsum, recompute_w_u, fwd_h, fwd_o)
 # ═══════════════════════════════════════════════════════════════════
@@ -85,17 +102,19 @@ def chunk_local_cumsum_scalar_kernel(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))
 
 
-def chunk_local_cumsum(g, chunk_size, scale=None, cu_seqlens=None):
+def chunk_local_cumsum(g, chunk_size, scale=None, cu_seqlens=None, chunk_indices=None):
     B, T, H = g.shape
     BT = chunk_size
-    NT = triton.cdiv(T, BT)
+    if cu_seqlens is not None and chunk_indices is None:
+        chunk_indices = prepare_chunk_indices(cu_seqlens, BT)
+    NT = triton.cdiv(T, BT) if cu_seqlens is None else len(chunk_indices)
     o = torch.empty_like(g, dtype=torch.float)
     chunk_local_cumsum_scalar_kernel[(NT, B * H)](
         s=g,
         o=o,
         scale=scale,
         cu_seqlens=cu_seqlens,
-        chunk_indices=None,
+        chunk_indices=chunk_indices,
         T=T,
         B=B,
         H=H,
@@ -445,17 +464,23 @@ def chunk_gated_delta_rule_fwd_kernel_h(
             tl.store(p_ht, b_h2.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
-def fwd_h(k, w, u, g, use_exp2=False):
+def fwd_h(k, w, u, g, use_exp2=False, initial_state=None, output_final_state=False, cu_seqlens=None, chunk_offsets=None):
     B, T, Hg, K = k.shape
     V = u.shape[-1]
     H = u.shape[-2]
     BT = 64
     NT = triton.cdiv(T, BT)
+    N = B
+    if cu_seqlens is not None:
+        N = len(cu_seqlens) - 1
+        if chunk_offsets is None:
+            chunk_offsets = prepare_chunk_offsets(cu_seqlens, BT)
     h = k.new_empty(B, NT, H, K, V)
     v_new = torch.empty_like(u)
+    ht = k.new_empty(N, H, K, V, dtype=torch.float32) if output_final_state else None
 
     def grid(meta):
-        return (triton.cdiv(V, meta["BV"]), B * H)
+        return (triton.cdiv(V, meta["BV"]), N * H)
 
     chunk_gated_delta_rule_fwd_kernel_h[grid](
         k=k,
@@ -465,10 +490,10 @@ def fwd_h(k, w, u, g, use_exp2=False):
         g=g,
         gk=None,
         h=h,
-        h0=None,
-        ht=None,
-        cu_seqlens=None,
-        chunk_offsets=None,
+        h0=initial_state,
+        ht=ht,
+        cu_seqlens=cu_seqlens,
+        chunk_offsets=chunk_offsets,
         T=T,
         H=H,
         Hg=Hg,
@@ -480,7 +505,7 @@ def fwd_h(k, w, u, g, use_exp2=False):
         num_warps=4,
         num_stages=2,
     )
-    return h, v_new
+    return h, v_new, ht
 
 
 # ── fwd_o (output) ─────────────────────────────────────────────
@@ -1381,29 +1406,35 @@ def fused_kkt_solve(k, g, beta, use_exp2=True):
 RCP_LN2 = 1.0 / 0.6931471805599453
 
 
-def fwd_h_orig(k, w, u, g, use_exp2=False):
+def fwd_h_orig(k, w, u, g, use_exp2=False, initial_state=None, output_final_state=False, cu_seqlens=None, chunk_offsets=None):
     """Original RTP config: BV=32, warps=4."""
     B, T, Hg, K = k.shape
     V = u.shape[-1]
     H = u.shape[-2]
     BT = 64
     NT = triton.cdiv(T, BT)
+    N = B
+    if cu_seqlens is not None:
+        N = len(cu_seqlens) - 1
+        if chunk_offsets is None:
+            chunk_offsets = prepare_chunk_offsets(cu_seqlens, BT)
     h = k.new_empty(B, NT, H, K, V)
     v_new = torch.empty_like(u)
+    ht = k.new_empty(N, H, K, V, dtype=torch.float32) if output_final_state else None
 
     def grid(meta):
-        return (triton.cdiv(V, meta["BV"]), B * H)
+        return (triton.cdiv(V, meta["BV"]), N * H)
 
     chunk_gated_delta_rule_fwd_kernel_h[grid](
         k=k, v=u, w=w, v_new=v_new, g=g, gk=None,
-        h=h, h0=None, ht=None,
-        cu_seqlens=None, chunk_offsets=None,
+        h=h, h0=initial_state, ht=ht,
+        cu_seqlens=cu_seqlens, chunk_offsets=chunk_offsets,
         T=T, H=H, Hg=Hg, K=K, V=V, BT=BT,
         BV=32,
         USE_EXP2=use_exp2,
         num_warps=4, num_stages=2,
     )
-    return h, v_new
+    return h, v_new, ht
 
 
 def fwd_o_orig(q, k, v_new, h, g, scale, use_exp2=False):
@@ -1428,25 +1459,31 @@ def fwd_o_orig(q, k, v_new, h, g, scale, use_exp2=False):
     return o
 
 
-def old_pipeline(q, k, v, g, beta, scale):
+def old_pipeline(q, k, v, g, beta, scale, initial_state=None, output_final_state=False,
+                 cu_seqlens=None, chunk_indices=None, chunk_offsets=None):
     """RTP original: 3-kernel path + original tile configs."""
-    g_cum = chunk_local_cumsum(g, chunk_size=64)
+    g_cum = chunk_local_cumsum(g, chunk_size=64, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices)
     A = kkt_fwd(k, beta, g_cum)
     A = solve_tril(A, output_dtype=k.dtype)
     w, u = recompute_w_u_fwd(k, v, beta, A, g_cum, use_exp2=False)
-    h, v_new = fwd_h_orig(k, w, u, g_cum, use_exp2=False)
+    h, v_new, ht = fwd_h_orig(k, w, u, g_cum, use_exp2=False,
+                               initial_state=initial_state, output_final_state=output_final_state,
+                               cu_seqlens=cu_seqlens, chunk_offsets=chunk_offsets)
     o = fwd_o_orig(q, k, v_new, h, g_cum, scale, use_exp2=False)
-    return o
+    return o, ht
 
 
-def new_pipeline(q, k, v, g, beta, scale):
+def new_pipeline(q, k, v, g, beta, scale, initial_state=None, output_final_state=False,
+                 cu_seqlens=None, chunk_indices=None, chunk_offsets=None):
     """Optimized: fused kkt+solve + exp2 + MI355X tile tuning."""
-    g_cum = chunk_local_cumsum(g, chunk_size=64, scale=RCP_LN2)
+    g_cum = chunk_local_cumsum(g, chunk_size=64, scale=RCP_LN2, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices)
     A = fused_kkt_solve(k, g_cum, beta, use_exp2=True)
     w, u = recompute_w_u_fwd(k, v, beta, A, g_cum, use_exp2=True)
-    h, v_new = fwd_h(k, w, u, g_cum, use_exp2=True)
+    h, v_new, ht = fwd_h(k, w, u, g_cum, use_exp2=True,
+                          initial_state=initial_state, output_final_state=output_final_state,
+                          cu_seqlens=cu_seqlens, chunk_offsets=chunk_offsets)
     o = fwd_o(q, k, v_new, h, g_cum, scale, use_exp2=True)
-    return o
+    return o, ht
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1478,12 +1515,20 @@ def main():
     parser.add_argument(
         "--stages", action="store_true", help="run per-stage + config sweep"
     )
+    parser.add_argument(
+        "--no-prod", action="store_true", help="disable production mode (no varlen, no final_state)"
+    )
     args = parser.parse_args()
+    use_prod = not args.no_prod
 
     B, T, Hg, H, DK, DV = 1, args.T, args.Hg, args.H, args.DK, args.DV
     SCALE = DK**-0.5
 
     print(f"Shape: B={B} T={T} Hg={Hg} H={H} DK={DK} DV={DV}  chunks={T//64}")
+    if use_prod:
+        print(f"  production mode: varlen=True, output_final_state=True, initial_state=None")
+    else:
+        print(f"  raw kernel mode: no varlen, no state")
     print()
 
     torch.manual_seed(42)
@@ -1495,12 +1540,25 @@ def main():
     g = F.logsigmoid(torch.randn(B, T, H, device="cuda", dtype=torch.bfloat16))
     beta = torch.rand(B, T, H, device="cuda", dtype=torch.bfloat16).sigmoid()
 
+    cu_seqlens = None
+    initial_state = None
+    output_final_state = False
+    chunk_indices = None
+    chunk_offsets = None
+    if use_prod:
+        cu_seqlens = torch.tensor([0, T], device="cuda", dtype=torch.long)
+        output_final_state = True
+        chunk_indices = prepare_chunk_indices(cu_seqlens, 64)
+        chunk_offsets = prepare_chunk_offsets(cu_seqlens, 64)
+
     # ── precision ───────────────────────────────────────────────
     print("=== Precision ===")
     torch.cuda.synchronize()
-    o_old = old_pipeline(q, k, v, g, beta, SCALE)
+    pipe_kw = dict(initial_state=initial_state, output_final_state=output_final_state,
+                   cu_seqlens=cu_seqlens, chunk_indices=chunk_indices, chunk_offsets=chunk_offsets)
+    o_old, ht_old = old_pipeline(q, k, v, g, beta, SCALE, **pipe_kw)
     torch.cuda.synchronize()
-    o_new = new_pipeline(q, k, v, g, beta, SCALE)
+    o_new, ht_new = new_pipeline(q, k, v, g, beta, SCALE, **pipe_kw)
     torch.cuda.synchronize()
 
     diff = (o_old.float() - o_new.float()).abs()
@@ -1510,12 +1568,16 @@ def main():
     print(f"  max_rel_err:   {rel.max().item():.6e}")
     print(f"  mean_rel_err:  {rel.mean().item():.6e}")
     print(f"  → {'PASS' if rel.mean().item() < 1e-2 else 'FAIL'}")
+    if output_final_state and ht_old is not None and ht_new is not None:
+        ht_diff = (ht_old.float() - ht_new.float()).abs()
+        ht_rel = ht_diff / (ht_old.float().abs() + 1e-8)
+        print(f"  final_state mean_rel_err: {ht_rel.mean().item():.6e} → {'PASS' if ht_rel.mean().item() < 1e-2 else 'FAIL'}")
     print()
 
     # ── end-to-end ──────────────────────────────────────────────
     print("=== End-to-End ===")
-    avg_old, min_old = bench_fn(lambda: old_pipeline(q, k, v, g, beta, SCALE))
-    avg_new, min_new = bench_fn(lambda: new_pipeline(q, k, v, g, beta, SCALE))
+    avg_old, min_old = bench_fn(lambda: old_pipeline(q, k, v, g, beta, SCALE, **pipe_kw))
+    avg_new, min_new = bench_fn(lambda: new_pipeline(q, k, v, g, beta, SCALE, **pipe_kw))
     print(f"  old pipeline:  avg={avg_old:8.0f} us  min={min_old:8.0f} us")
     print(f"  new pipeline:  avg={avg_new:8.0f} us  min={min_new:8.0f} us")
     print(f"  speedup: {avg_old/avg_new:.3f}x  savings: {avg_old-avg_new:.0f} us")

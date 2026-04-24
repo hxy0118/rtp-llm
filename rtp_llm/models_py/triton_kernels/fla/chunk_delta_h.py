@@ -309,6 +309,26 @@ def chunk_gated_delta_rule_fwd_h(
     cu_seqlens: Optional[torch.LongTensor] = None,
     use_exp2: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    # Gluon dispatch for AMD CDNA4 (MI355X): ~10-18% faster for TP2 H≤32 T≤64K
+    try:
+        from rtp_llm.models_py.triton_kernels.fla.chunk_delta_h_gluon import (
+            _is_gluon_beneficial,
+            chunk_gated_delta_rule_fwd_h_gluon,
+        )
+        H = u.shape[-2]
+        T = k.shape[1]
+        if gk is None and _is_gluon_beneficial(H, T):
+            return chunk_gated_delta_rule_fwd_h_gluon(
+                k=k, w=w, u=u, g=g,
+                initial_state=initial_state,
+                output_final_state=output_final_state,
+                chunk_size=chunk_size,
+                save_new_value=save_new_value,
+                cu_seqlens=cu_seqlens,
+                use_exp2=use_exp2,
+            )
+    except ImportError:
+        pass
     B, T, Hg, K, V = *k.shape, u.shape[-1]
     H = u.shape[-2]
     BT = chunk_size

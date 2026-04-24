@@ -1,131 +1,116 @@
-# MI355X chunk-GDN Triton Kernel 性能报告
+# MI355X chunk-GDN (Gated Delta Net) 性能优化报告
 
-日期: 2026-04-23
-GPU: AMD Instinct MI355X (gfx950, CDNA4, 304 CUs, 160KB LDS/CU)
-环境: PyTorch 2.13.0.dev+rocm7.2, Triton 3.6.0
-Shape: B=1, T=65536, Hg=8, H=32, DK=DV=128, BT=64 (Qwen3.5-397B TP2, 64K prefill)
-生产实测 shape: B=1, T=67174 (基本一致)
+> 日期: 2026-04-24
+> GPU: AMD Instinct MI355X (gfx950, CDNA4, 304 CUs, 160KB LDS/CU)
+> 环境: PyTorch 2.13.0.dev+rocm7.2, Triton 3.6.0, Gluon
+> 模型: Qwen3.5-397B (DK=128, DV=128, BT=64)
+> 测试: B=1, varlen=True, output_final_state=True (生产首次 prefill)
 
-## 1. 端到端性能
+## 1. 综合性能 — TP2 (Hg=8, H=32) 生产配置
 
-| Pipeline | 优化前 (us) | 优化后 (us) | 加速比 |
-|----------|------------|------------|--------|
-| old (3-kernel kkt+solve+recompute) | 5655 | 4336 | 1.30x |
-| new (fused_kkt_solve + exp2) | 5196 | **3946** | **1.32x** |
-| new vs 原始 old | — | — | **1.43x** |
+### 端到端 Pipeline (us)
 
-精度: PASS (mean_rel_err=5.5e-06, max_abs_diff=3.9e-03)
+| T | Triton orig | Triton new | Best-of-both | new vs orig | best vs new |
+|---|------------|-----------|-------------|-------------|-------------|
+| 4096 | 374 | 297 | **282** | 1.26x | **1.05x** |
+| 8192 | 696 | 562 | **518** | 1.24x | **1.08x** |
+| 16384 | 1371 | 1070 | **1037** | 1.28x | **1.03x** |
+| 32768 | 2777 | 2152 | **2099** | 1.29x | **1.03x** |
+| 65536 | 5630 | 4293 | **4162** | 1.31x | **1.03x** |
+| 131072 | 11499 | **7587** | 8179 | 1.52x | 0.93x |
+| 262144 | 21250 | 16835 | **16229** | 1.26x | **1.04x** |
 
-## 2. 优化内容
+### fwd_h 孤立性能 (us)
 
-仅改 Triton launch 配置参数，零算法改动:
+| T | Triton tuned | Gluon | 加速比 | 推荐 |
+|---|-------------|-------|--------|------|
+| 4096 | 160 | **143** | **1.12x** | Gluon ✓ |
+| 8192 | 371 | **322** | **1.15x** | Gluon ✓ |
+| 16384 | 692 | **650** | **1.07x** | Gluon ✓ |
+| 32768 | 1317 | **1152** | **1.14x** | Gluon ✓ |
+| 65536 | 2570 | **2276** | **1.13x** | Gluon ✓ |
+| 131072 | **4197** | 4865 | 0.86x | Triton |
+| 262144 | **8350** | 8737 | 0.96x | Triton |
 
-### fwd_h (state recurrence, 占总时间 55%)
+**Gluon fwd_h 在 T ≤ 65536 稳定快 7-15%。T ≥ 128K 时 Triton 更优。**
 
-| 参数 | 改前 | 改后 | 原因 |
-|------|------|------|------|
-| BV | 32 | **16** | blocks 128→256，CU 利用率 42%→84% |
+## 2. TP1 (Hg=16, H=64) 性能
 
-- VGPR: 108 → 56, occupancy: 4→9 waves/SIMD
-- LDS: 36KB → 34KB
-- 耗时: 3095 → **2185 us** (-29%)
+### 端到端 Pipeline (us)
 
-### fwd_o (output kernel, 占总时间 15%)
+| T | Triton orig | Triton new | Best-of-both |
+|---|------------|-----------|-------------|
+| 4096 | 573 | **489** | 499 |
+| 8192 | 1104 | **931** | 935 |
+| 16384 | 2200 | **1878** | 1917 |
+| 32768 | 4319 | **3743** | 3762 |
 
-| 参数 | 改前 | 改后 | 原因 |
-|------|------|------|------|
-| BV | 64 | **128** | 减少 V 维循环次数 |
-| BK | 128 | **64** | K 维拆两次迭代，降低 tile 大小 |
-| num_warps | 4 | **1** | 消除 warp 间同步开销 |
+### fwd_h 孤立 (us)
 
-- VGPR: 108 → 216, blocks: 65536 → 32768 (仍然充足)
-- 耗时: 917 → **589 us** (-36%)
+| T | Triton tuned | Gluon | 加速比 |
+|---|-------------|-------|--------|
+| 4096 | **264** | 278 | 0.95x |
+| 8192 | **495** | 514 | 0.96x |
+| 16384 | **1006** | 1052 | 0.96x |
+| 32768 | **2108** | 2177 | 0.97x |
 
-### fused_kkt_solve
+**TP1 (H=64) 下 Gluon 始终慢 3-5%。全部用 Triton。**
 
-MI355X 与 MI308X 一致: BK=64, warps=1 最优，无需改动。
+## 3. Dispatch 规则
 
-## 3. 每阶段耗时分解 (优化后)
+```python
+# 在 chunk_delta_h.py 的 wrapper 中自动 dispatch：
+if H <= 32 and T <= 65536 and is_gfx950:
+    gluon_fwd_h(...)    # +7-15%
+else:
+    triton_fwd_h(...)   # 原始路径
+```
 
-| 阶段 | 耗时 (us) | 占比 | Blocks | VGPR | LDS |
-|------|----------|------|--------|------|-----|
-| cumsum | 57 | 1.4% | 262144 | 4 | 0 |
-| fused_kkt_solve | 475 | 12.0% | 32768 | 72 | 1KB |
-| recompute_w_u | 642 | 16.3% | 32768 | 88 | 16KB |
-| **fwd_h** | **2185** | **55.4%** | 256 | 56 | 34KB |
-| fwd_o | 589 | 14.9% | 32768 | 216 | 32KB |
-| **总计** | **3946** | 100% | | | |
+| 条件 | fwd_h 推荐 | 典型加速 |
+|------|-----------|---------|
+| **H ≤ 32, T ≤ 64K** | **Gluon** | **+7-15%** |
+| H ≤ 32, T = 128K | Triton | (Gluon 慢 14%) |
+| H ≤ 32, T = 256K | Triton | (Gluon 慢 4%) |
+| H = 64, 所有 T | Triton | (Gluon 慢 3-5%) |
 
-## 4. Config Sweep 数据
+## 4. 各 Kernel 性能 (TP2, T=65536)
 
-### fused_kkt_solve
+| # | Kernel | 时间 (us) | 占比 | 最优 |
+|---|--------|----------|------|------|
+| 1 | cumsum | 60 | 1.4% | Triton |
+| 2-3 | fused_kkt_solve | 479 | 11.5% | Triton (vs 分离 2.39x) |
+| 4 | recompute_w_u | 624 | 15.0% | Triton |
+| 5 | **fwd_h** | **2276** | **54.7%** | **Gluon (+13%)** |
+| 6 | fwd_o | 683 | 16.4% | Triton |
 
-| BK | warps | 耗时 (us) |
-|----|-------|----------|
-| 32 | 1 | 513 |
-| **64** | **1** | **475** |
-| 64 | 2 | 948 |
-| 64 | 4 | 1767 |
-| 64 | 8 | 3763 |
+## 5. fwd_h 优化技术
 
-### fwd_h (BV x warps)
+| 步骤 | 提升 | 技术 | 发现方法 |
+|------|------|------|---------|
+| BV=16 | +8% | tile sweep | 参数搜索 |
+| buffer_load 预取 | +33% | w/v/k^T 跨迭代 | 循环分析 |
+| k_width=8 | +10% | 匹配 Triton kWidth | ISA dump |
+| convert_layout(b_h/b_v) | +6% | 消除 ds_write_b16 | gpu-wiki 3.2 |
+| blocked_v + convert_layout(v) | +8% | 匹配 TTGIR #blocked2 | TTGIR 分析 |
 
-| BV | warps | 耗时 (us) | blocks |
-|----|-------|----------|--------|
-| **16** | **4** | **2136** | 256 |
-| 16 | 1 | 2809 | 256 |
-| 16 | 8 | 2666 | 256 |
-| 32 | 2 | 2342 | 128 |
-| 32 | 4 | 3107 | 128 |
-| 64 | 1 | 10470 | 64 |
-| 64 | 4 | 2603 | 64 |
+核心发现: **BV=16 窄 tile 用 smem 产生 ds_write_b16 (逐元素写入)，改 convert_layout 消除。**
 
-### fwd_o (BV x BK x warps)
+## 6. RTP 集成
 
-| BV | BK | warps | 耗时 (us) | blocks |
-|----|-----|-------|----------|--------|
-| **128** | **64** | **1** | **580** | 32768 |
-| 128 | 128 | 1 | 655 | 32768 |
-| 64 | 64 | 1 | 717 | 65536 |
-| 64 | 128 | 4 | 948 | 65536 |
-| 32 | 64 | 1 | 1214 | 131072 |
+**新增**: `rtp_llm/models_py/triton_kernels/fla/chunk_delta_h_gluon.py`
+**修改**: `rtp_llm/models_py/triton_kernels/fla/chunk_delta_h.py` (添加 Gluon dispatch)
 
-### MFMA shape (matrix_instr_nonkdim)
+- 零改动 fallback: Gluon 不可用或条件不满足时使用原始 Triton
+- 位精确匹配: 所有输出 rel_err = 0.0
+- 自动 dispatch: 根据 H, T, GPU arch 判断
 
-| Kernel | mfma=16 | mfma=32 | 结论 |
-|--------|---------|---------|------|
-| fwd_h | **2115** | 2412 | Triton 已默认 16，无额外收益 |
-| fwd_o | 590 | 581 | 差异可忽略 |
-| recompute_w_u | **650** | 723 | 已默认 16 |
+## 7. 文件索引
 
-## 5. rocprof PMC 瓶颈分析
-
-### 指令分布
-
-| Kernel | VALU | LDS | FLAT | SMEM |
-|--------|------|-----|------|------|
-| fwd_h | 119.6M | 2.1M | 6.3M | 3.1M |
-| fwd_o | 50.1M | 1.6M | 6.1M | 1.6M |
-| recompute_w_u | 212.5M | 4.2M | 13.9M | 0 |
-
-### LDS Bank Conflict (头号瓶颈)
-
-| Kernel | LDS 指令 | Bank Conflict Cycles | 冲突/指令 |
-|--------|---------|---------------------|----------|
-| fwd_h | 2.1M | **134M** | 64 |
-| fwd_o | 1.6M | **126M** | 77 |
-| recompute_w_u | 4.2M | 67M | 16 |
-
-根源: Triton `tl.dot` 经 LDS staging 给 MFMA，layout 无法用户侧控制。
-Triton 已使用最优 MFMA 16x16，配置调优已触顶。
-
-## 6. 进一步优化路线
-
-| 路线 | 预估收益 | 难度 | 说明 |
-|------|---------|------|------|
-| waves_per_eu=2 (fwd_h) | ~50us (2%) | 低 | 微小 |
-| recompute_w_u + fwd_h 融合 | ~200-400us | 中 | 省 w/u 的 GMEM round-trip |
-| FlyDSL megakernel | 1.5-3x | 高 | state 留 LDS 不落 GMEM，persistent pipeline |
-
-fwd_h 占 55% 且受限于 1024 chunks 串行依赖，Triton 配置调优已到天花板。
-下一步收益需走 kernel fusion 或 FlyDSL megakernel 路线。
+| 文件 | 说明 |
+|------|------|
+| `triton_opt/bench_standalone.py` | Triton kernels + pipelines |
+| `triton_opt/bench_gluon.py` | Gluon kernels (开发/测试) |
+| `triton_opt/bench_comprehensive.py` | TP1/TP2 × T 综合测试 |
+| `triton_opt/MI355X_PERF_REPORT.md` | 本报告 |
+| `rtp_llm/.../fla/chunk_delta_h_gluon.py` | **Gluon fwd_h (生产)** |
+| `rtp_llm/.../fla/chunk_delta_h.py` | **修改: 添加 dispatch** |
