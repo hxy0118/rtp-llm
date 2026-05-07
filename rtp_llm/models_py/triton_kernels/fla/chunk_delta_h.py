@@ -12,8 +12,13 @@ from rtp_llm.models_py.triton_kernels.fla.index import (
     prepare_chunk_indices,
     prepare_chunk_offsets,
 )
-from rtp_llm.models_py.triton_kernels.fla.op import exp, safe_exp
-from rtp_llm.models_py.triton_kernels.fla.utils import is_nvidia_hopper
+from rtp_llm.models_py.triton_kernels.fla.op import exp2
+from rtp_llm.models_py.triton_kernels.fla.utils import (
+    is_amd,
+    is_amd_cdna3,
+    is_amd_cdna4,
+    is_nvidia_hopper,
+)
 
 NUM_WARPS = [2, 4] if is_nvidia_hopper else [2, 4, 8, 16]
 
@@ -182,13 +187,16 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
 
         last_idx = min((i_t + 1) * BT, T) - 1
         if USE_G:
-            b_g_last = tl.load(g + bos * H + last_idx * H + i_h)
+            m_t = (i_t * BT + tl.arange(0, BT)) < T
+            b_g_last = tl.load(g + (bos * H + last_idx * H + i_h).to(tl.int64)).to(
+                tl.float32
+            )
             p_g = tl.make_block_ptr(
                 g + bos * H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,)
             )
-            b_g = tl.load(p_g, boundary_check=(0,))
-            b_v = b_v * safe_exp(b_g_last - b_g)[:, None]
-            b_g_last = exp(b_g_last)
+            b_g = tl.load(p_g, boundary_check=(0,)).to(tl.float32)
+            b_v = b_v * tl.where(m_t, exp2(b_g_last - b_g), 0)[:, None]
+            b_g_last = exp2(b_g_last)
             b_h1 = b_h1 * b_g_last
             if K > 64:
                 b_h2 = b_h2 * b_g_last
@@ -203,32 +211,32 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
                 gk + (bos + last_idx) * H * K + i_h * K + o_k1,
                 mask=(o_k1 < K),
                 other=0.0,
-            )
-            b_h1 *= exp(b_gk_last1)[:, None]
+            ).to(tl.float32)
+            b_h1 *= exp2(b_gk_last1)[:, None]
             if K > 64:
                 o_k2 = 64 + o_k1
                 b_gk_last2 = tl.load(
                     gk + (bos + last_idx) * H * K + i_h * K + o_k2,
                     mask=(o_k2 < K),
                     other=0.0,
-                )
-                b_h2 *= exp(b_gk_last2)[:, None]
+                ).to(tl.float32)
+                b_h2 *= exp2(b_gk_last2)[:, None]
             if K > 128:
                 o_k3 = 128 + o_k1
                 b_gk_last3 = tl.load(
                     gk + (bos + last_idx) * H * K + i_h * K + o_k3,
                     mask=(o_k3 < K),
                     other=0.0,
-                )
-                b_h3 *= exp(b_gk_last3)[:, None]
+                ).to(tl.float32)
+                b_h3 *= exp2(b_gk_last3)[:, None]
             if K > 192:
                 o_k4 = 192 + o_k1
                 b_gk_last4 = tl.load(
                     gk + (bos + last_idx) * H * K + i_h * K + o_k4,
                     mask=(o_k4 < K),
                     other=0.0,
-                )
-                b_h4 *= exp(b_gk_last4)[:, None]
+                ).to(tl.float32)
+                b_h4 *= exp2(b_gk_last4)[:, None]
         b_v = b_v.to(k.dtype.element_ty)
 
         p_k = tl.make_block_ptr(
@@ -284,10 +292,53 @@ def chunk_gated_delta_rule_fwd_h(
     gk: Optional[torch.Tensor] = None,
     initial_state: Optional[torch.Tensor] = None,
     output_final_state: bool = False,
-    chunk_size: int = 64,  # SY: remove this argument and force chunk size 64?
+    chunk_size: int = 64,
     save_new_value: bool = True,
     cu_seqlens: Optional[torch.LongTensor] = None,
+    state_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Args:
+        state_dtype: dtype of the per-chunk hidden state buffer ``h``.
+            - If explicitly provided by the caller, it is honored on both the
+              generic Triton fallback path and the Gluon/AMD CDNA4 path.
+            - If ``None``:
+                * Generic Triton fallback keeps fp32 as the default (matches
+                  upstream fla semantics; the kernel accumulates in fp32, so
+                  silently downcasting to ``k.dtype`` would lose precision).
+                * Gluon/AMD CDNA4 path falls back to ``initial_state.dtype``
+                  (or ``k.dtype`` when ``initial_state is None``) as an
+                  internal MI355X-only optimization. See
+                  ``chunk_gated_delta_rule_fwd_h_gluon`` for details.
+    """
+    # Gluon dispatch for AMD CDNA4 (MI355X): ~10-18% faster for TP2 H≤32 T≤64K
+    try:
+        from rtp_llm.models_py.triton_kernels.fla.chunk_delta_h_gluon import (
+            _is_gluon_beneficial,
+            chunk_gated_delta_rule_fwd_h_gluon,
+        )
+
+        _gluon_available = True
+    except ImportError:
+        _gluon_available = False
+
+    if _gluon_available:
+        H = u.shape[-2]
+        T = k.shape[1]
+        K = k.shape[-1]
+        if gk is None and _is_gluon_beneficial(H, T, K):
+            return chunk_gated_delta_rule_fwd_h_gluon(
+                k=k,
+                w=w,
+                u=u,
+                g=g,
+                initial_state=initial_state,
+                output_final_state=output_final_state,
+                chunk_size=chunk_size,
+                save_new_value=save_new_value,
+                cu_seqlens=cu_seqlens,
+                state_dtype=state_dtype,
+            )
     B, T, Hg, K, V = *k.shape, u.shape[-1]
     H = u.shape[-2]
     BT = chunk_size
@@ -308,7 +359,16 @@ def chunk_gated_delta_rule_fwd_h(
         )
     assert K <= 256, "current kernel does not support head dimension larger than 256."
 
-    h = k.new_empty(B, NT, H, K, V, dtype=torch.float32)
+    # Generic Triton fallback: the kernel accumulates ``b_h*`` in fp32 and
+    # only casts on store. Defaulting to fp32 here preserves precision and
+    # matches upstream fla. Callers that knowingly want a narrower buffer
+    # (e.g. to save memory) must opt in by passing ``state_dtype`` explicitly,
+    # rather than having it silently inferred from ``k.dtype``.
+    if state_dtype is None:
+        h_dtype = torch.float32
+    else:
+        h_dtype = state_dtype
+    h = k.new_empty(B, NT, H, K, V, dtype=h_dtype)
     final_state = (
         k.new_empty(N, H, K, V, dtype=torch.float32) if output_final_state else None
     )
@@ -336,7 +396,7 @@ def chunk_gated_delta_rule_fwd_h(
         K=K,
         V=V,
         BT=BT,
-        BV=32,
+        BV=64 if is_amd_cdna3 else (16 if is_amd_cdna4 else 32),
         num_warps=4,
         num_stages=2,
     )

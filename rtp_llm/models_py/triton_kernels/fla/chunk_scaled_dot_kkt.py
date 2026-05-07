@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 
 from rtp_llm.models_py.triton_kernels.fla.index import prepare_chunk_indices
-from rtp_llm.models_py.triton_kernels.fla.op import safe_exp
+from rtp_llm.models_py.triton_kernels.fla.op import exp2
 
 
 @triton.heuristics(
@@ -82,7 +82,10 @@ def chunk_scaled_dot_kkt_fwd_kernel(
         )
         b_g = tl.load(p_g, boundary_check=(0,))
         b_g_diff = b_g[:, None] - b_g[None, :]
-        b_A = b_A * safe_exp(b_g_diff)
+        # g is in log2 domain (scaled by RCP_LN2 in chunk_local_cumsum).
+        # b_g_diff ≤ 0 within each chunk (cumsum of logsigmoid ≤ 0),
+        # so exp2 ∈ (0, 1] — no clamping needed.
+        b_A = b_A * exp2(b_g_diff)
 
     b_A *= b_beta[:, None]
     b_A = tl.where(o_t[:, None] > o_t[None, :], b_A, 0)

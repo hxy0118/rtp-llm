@@ -9,9 +9,11 @@ import triton
 import triton.language as tl
 
 from rtp_llm.models_py.triton_kernels.fla.index import prepare_chunk_indices
-from rtp_llm.models_py.triton_kernels.fla.op import exp, safe_exp
+from rtp_llm.models_py.triton_kernels.fla.op import exp2
 from rtp_llm.models_py.triton_kernels.fla.utils import (
     check_shared_mem,
+    is_amd,
+    is_amd_cdna3,
     is_nvidia_hopper,
 )
 
@@ -111,11 +113,17 @@ def chunk_fwd_kernel_o(
         g += bos * H + i_h
         p_g = tl.make_block_ptr(g, (T,), (H,), (i_t * BT,), (BT,), (0,))
         b_g = tl.load(p_g, boundary_check=(0,))
-        b_o = b_o * exp(b_g)[:, None]
-        b_A = b_A * safe_exp(b_g[:, None] - b_g[None, :])
+        b_o = b_o * exp2(b_g)[:, None]
+        # g is in log2 domain (cumsum scaled by RCP_LN2 = 1/ln2 in
+        # chunk_local_cumsum on both NVIDIA and AMD). Within each chunk the
+        # cumsum is monotonically non-decreasing (logsigmoid ≤ 0), so
+        # b_g[i] - b_g[j] ≤ 0 for i ≥ j, guaranteeing exp2 ∈ (0, 1].
+        # The m_A mask below zeros out i < j entries.
+        b_A = b_A * exp2(b_g[:, None] - b_g[None, :])
 
-    o_i = tl.arange(0, BT)
-    m_A = o_i[:, None] >= o_i[None, :]
+    o_t = i_t * BT + tl.arange(0, BT)
+    m_t = o_t < T
+    m_A = (o_t[:, None] >= o_t[None, :]) & (m_t[:, None] & m_t)
     b_A = tl.where(m_A, b_A, 0)
 
     p_v = tl.make_block_ptr(
@@ -137,7 +145,7 @@ def chunk_fwd_o(
     k: torch.Tensor,
     v: torch.Tensor,
     h: torch.Tensor,
-    g: Optional[torch.Tensor] = None,  # cumsum of log decay
+    g: Optional[torch.Tensor] = None,
     scale: Optional[float] = None,
     cu_seqlens: Optional[torch.LongTensor] = None,
     chunk_size: int = 64,
@@ -173,9 +181,9 @@ def chunk_fwd_o(
         K=K,
         V=V,
         BT=BT,
-        BK=128,
-        BV=64,
-        num_warps=4,
-        num_stages=2,
+        BK=64 if is_amd else 128,
+        BV=128 if is_amd else 64,
+        num_warps=(4 if h.dtype == torch.float32 else 1) if is_amd else 4,
+        num_stages=1 if is_amd_cdna3 else 2,
     )
     return o
