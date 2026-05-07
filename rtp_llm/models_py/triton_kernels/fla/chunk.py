@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
 
+import os
 from typing import Optional
 
 import torch
@@ -12,6 +13,7 @@ from rtp_llm.models_py.triton_kernels.fla.chunk_delta_h import (
 )
 from rtp_llm.models_py.triton_kernels.fla.chunk_fwd import (
     chunk_gated_delta_rule_fwd_intra,
+    chunk_gated_delta_rule_fwd_intra_a_only,
 )
 from rtp_llm.models_py.triton_kernels.fla.chunk_o import chunk_fwd_o
 from rtp_llm.models_py.triton_kernels.fla.chunk_scaled_dot_kkt import (
@@ -29,6 +31,44 @@ from rtp_llm.models_py.triton_kernels.fla.utils import (
 from rtp_llm.models_py.triton_kernels.fla.wy_fast import recompute_w_u_fwd
 
 RCP_LN2 = 1.0 / 0.6931471805599453
+_TRUE_ENV_VALUES = {"1", "true", "t", "yes", "y", "on"}
+
+
+def _use_flydsl_chunk_gdn() -> bool:
+    return os.getenv("USE_FLYDSL", "0").strip().lower() in _TRUE_ENV_VALUES
+
+
+def is_flydsl_chunk_gdn_enabled() -> bool:
+    return _use_flydsl_chunk_gdn()
+
+
+def _validate_flydsl_chunk_gdn_inputs(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    beta: torch.Tensor,
+) -> None:
+    B, T, Hg, K = q.shape
+    _, _, H, V = v.shape
+    errors = []
+    if not is_amd:
+        errors.append("AMD/ROCm backend is required")
+    if (
+        q.dtype != torch.bfloat16
+        or k.dtype != torch.bfloat16
+        or v.dtype != torch.bfloat16
+    ):
+        errors.append(f"q/k/v must be bf16, got {q.dtype}/{k.dtype}/{v.dtype}")
+    if beta.dtype != torch.bfloat16:
+        errors.append(f"beta must be bf16, got {beta.dtype}")
+    if (Hg, H, K, V) != (8, 32, 128, 128):
+        errors.append(f"expected Hg/H/K/V=(8,32,128,128), got {(Hg, H, K, V)}")
+    if B < 1 or T < 1:
+        errors.append(f"expected non-empty input, got B={B}, T={T}")
+    if errors:
+        raise ValueError(
+            "USE_FLYDSL=1 Chunk-GDN path is unsupported: " + "; ".join(errors)
+        )
 
 
 def chunk_gated_delta_rule_fwd(
@@ -62,11 +102,58 @@ def chunk_gated_delta_rule_fwd(
             beta=beta,
             cu_seqlens=cu_seqlens,
         )
+        if _use_flydsl_chunk_gdn():
+            _validate_flydsl_chunk_gdn_inputs(q=q, k=k, v=v, beta=beta)
+            from rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi300x import (
+                megakernel_fwd,
+            )
+
+            flydsl_initial_state = (
+                initial_state.float()
+                if initial_state is not None and initial_state.dtype != torch.float32
+                else initial_state
+            )
+            flydsl_cu_seqlens = (
+                cu_seqlens.to(torch.long)
+                if cu_seqlens is not None and cu_seqlens.dtype != torch.long
+                else cu_seqlens
+            )
+            o, final_state = megakernel_fwd(
+                q=q,
+                k=k,
+                v=v,
+                a=A,
+                g=g,
+                beta=beta,
+                scale=scale,
+                initial_state=flydsl_initial_state,
+                output_final_state=output_final_state,
+                cu_seqlens=flydsl_cu_seqlens,
+            )
+            # The public chunk_gated_delta_rule API still returns per-chunk h.
+            # Qwen3Next prefill uses the dedicated FlyDSL cache-store helper
+            # below to skip this Triton h producer when h is only needed for
+            # RTP SSM block-state persistence.
+            h, v_new, _ = chunk_gated_delta_rule_fwd_h(
+                k=k,
+                w=w,
+                u=u,
+                g=g,
+                initial_state=initial_state,
+                output_final_state=False,
+                save_new_value=False,
+                cu_seqlens=cu_seqlens,
+            )
+            return g, o, A, final_state, w, h, v_new
     else:
         g = chunk_local_cumsum(g, chunk_size=64, cu_seqlens=cu_seqlens)
         # Original pipeline: separate kkt -> solve_tril -> recompute_w_u
         A = chunk_scaled_dot_kkt_fwd(
-            k=k, beta=beta, g_cumsum=g, cu_seqlens=cu_seqlens, output_dtype=torch.float32
+            k=k,
+            beta=beta,
+            g_cumsum=g,
+            cu_seqlens=cu_seqlens,
+            output_dtype=torch.float32,
         )
         A = solve_tril(A=A, cu_seqlens=cu_seqlens, output_dtype=k.dtype)
         w, u = recompute_w_u_fwd(
@@ -97,6 +184,131 @@ def chunk_gated_delta_rule_fwd(
         cu_seqlens=cu_seqlens,
     )
     return g, o, A, final_state, w, h, v_new
+
+
+@torch.compiler.disable
+def chunk_gated_delta_rule_flydsl_with_cache_store(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    prefix_lengths: torch.Tensor,
+    block_map: torch.Tensor,
+    ssm_states: torch.Tensor,
+    seq_size_per_block: int,
+    scale: float = None,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = True,
+    cu_seqlens: Optional[torch.LongTensor] = None,
+    head_first: bool = False,
+    use_qk_l2norm_in_kernel: bool = False,
+):
+    if not _use_flydsl_chunk_gdn():
+        raise RuntimeError(
+            "chunk_gated_delta_rule_flydsl_with_cache_store requires USE_FLYDSL=1"
+        )
+    if head_first:
+        raise DeprecationWarning(
+            "head_first is deprecated and is not supported by the FlyDSL cache-store path."
+        )
+    if cu_seqlens is not None and q.shape[0] != 1:
+        raise ValueError(
+            f"The batch size is expected to be 1 rather than {q.shape[0]} when using `cu_seqlens`."
+        )
+    if cu_seqlens is not None and initial_state is not None:
+        expected_states = len(cu_seqlens) - 1
+        if initial_state.shape[0] != expected_states:
+            raise ValueError(
+                f"The number of initial states is expected to be {expected_states} "
+                f"rather than {initial_state.shape[0]}."
+            )
+    _validate_flydsl_chunk_gdn_inputs(q=q, k=k, v=v, beta=beta)
+    if ssm_states.dtype not in (torch.bfloat16, torch.float32):
+        raise ValueError(
+            f"unsupported ssm_states dtype for FlyDSL direct store: {ssm_states.dtype}"
+        )
+    _, _, H, V = v.shape
+    K = k.shape[-1]
+    if (
+        ssm_states.stride(1) != K * V
+        or ssm_states.stride(2) != K
+        or ssm_states.stride(3) != 1
+    ):
+        raise ValueError(
+            "FlyDSL direct store expects ssm_states layout [block, head, V, K] "
+            "with contiguous per-head state"
+        )
+    if scale is None:
+        scale = k.shape[-1] ** -0.5
+
+    q = q.contiguous()
+    k = k.contiguous()
+    v = v.contiguous()
+    g = g.contiguous()
+    beta = beta.contiguous()
+    if initial_state is not None:
+        initial_state = initial_state.contiguous()
+    if prefix_lengths.dtype != torch.int32:
+        prefix_lengths = prefix_lengths.to(torch.int32)
+    if block_map.dtype != torch.int32:
+        block_map = block_map.to(torch.int32)
+    if not prefix_lengths.is_contiguous():
+        prefix_lengths = prefix_lengths.contiguous()
+    if not block_map.is_contiguous():
+        block_map = block_map.contiguous()
+
+    if use_qk_l2norm_in_kernel:
+        if is_amd:
+            q, k = fused_l2norm_qk(q, k)
+        else:
+            q = l2norm_fwd(q)
+            k = l2norm_fwd(k)
+
+    g = chunk_local_cumsum(
+        g,
+        chunk_size=64,
+        scale=RCP_LN2,
+        cu_seqlens=cu_seqlens,
+    )
+    A = chunk_gated_delta_rule_fwd_intra_a_only(
+        k=k,
+        g=g,
+        beta=beta,
+        cu_seqlens=cu_seqlens,
+    )
+
+    from rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi300x import (
+        megakernel_fwd,
+    )
+
+    flydsl_initial_state = (
+        initial_state.float()
+        if initial_state is not None and initial_state.dtype != torch.float32
+        else initial_state
+    )
+    flydsl_cu_seqlens = (
+        cu_seqlens.to(torch.long)
+        if cu_seqlens is not None and cu_seqlens.dtype != torch.long
+        else cu_seqlens
+    )
+    o, final_state = megakernel_fwd(
+        q=q,
+        k=k,
+        v=v,
+        a=A,
+        g=g,
+        beta=beta,
+        scale=scale,
+        initial_state=flydsl_initial_state,
+        output_final_state=output_final_state,
+        cu_seqlens=flydsl_cu_seqlens,
+        prefix_lengths=prefix_lengths,
+        block_map=block_map,
+        ssm_states=ssm_states,
+        seq_size_per_block=seq_size_per_block,
+    )
+    return o.to(q.dtype), final_state
 
 
 class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
