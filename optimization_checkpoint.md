@@ -82,10 +82,55 @@ TBD
 - profile 证据: store path top kernels 中无 `recompute_w_u_fwd_kernel`、无 Triton `chunk_gated_delta_rule_fwd_kernel_h_blockdim64`、无 `store_ssm_state_to_block_map_kernel`
 - 结论: direct `ssm_states` 写入确实增加 megakernel/整条 operator 时间，长序列约 `7-10%`；但这仍比生产路径重新引入外部 Triton `fwd_h + store_ssm_state_to_block_map` 更划算，且保持 cache-state 语义完整
 
+### 实验 6: Long-context RTP operator profile to 200k
+- 状态: 有效
+- 命令形态: `rocprofv3 --kernel-trace --stats` over `tools/benchmarks/bench_flydsl_chunk_gdn_long.py`, `iters=5`, `seq_size_per_block=64`, `ssm_states=bf16`, B=1, `(Hg,H,K,V)=(8,32,128,128)`
+- Triton 基线: `Current Triton` is this branch's optimized Triton; `507e Triton` is detached worktree at `507e404849065c2664d2440273cae30eb0393838`
+- 路径定义: both paths include `load_initial_state_from_block_map`; Triton path runs `chunk_gated_delta_rule` plus `store_ssm_state_to_block_map`; FlyDSL path runs `chunk_gated_delta_rule_flydsl_with_cache_store` with direct `h_acc -> ssm_states` store
+- prefix-cache 场景: total context length fixed; `prefix_len ~= total/2` and block-aligned to 64, current `input_len = total - prefix_len`
+
+| Scenario | Total len | Prefix len | Input len | 507e Triton ms | Current Triton ms | FlyDSL ms | FlyDSL vs 507e | FlyDSL vs current |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| normal | 16,384 | 0 | 16,384 | 8.384 | 5.473 | 3.828 | 2.19x | 1.43x |
+| normal | 65,536 | 0 | 65,536 | 33.477 | 21.742 | 15.131 | 2.21x | 1.44x |
+| normal | 131,072 | 0 | 131,072 | 67.028 | 43.624 | 30.164 | 2.22x | 1.45x |
+| normal | 200,000 | 0 | 200,000 | 102.441 | 67.489 | 45.940 | 2.23x | 1.47x |
+| prefix50 | 16,384 | 8,192 | 8,192 | 4.202 | 2.830 | 1.966 | 2.14x | 1.44x |
+| prefix50 | 65,536 | 32,768 | 32,768 | 16.816 | 10.985 | 7.568 | 2.22x | 1.45x |
+| prefix50 | 131,072 | 65,536 | 65,536 | 33.505 | 21.765 | 15.239 | 2.20x | 1.43x |
+| prefix50 | 200,000 | 99,968 | 100,032 | 51.146 | 33.369 | 22.924 | 2.23x | 1.46x |
+
+- profile 证据: 200k normal Triton top kernels include `chunk_gated_delta_rule_fwd_kernel_h_blockdim64` `21.98ms/call`, `recompute_w_u_fwd_kernel` `17.65ms/call`, `store_ssm_state_to_block_map_kernel` `3.36ms/call`; FlyDSL top kernels include `megakernel_fn_0` `36.44ms/call` and no external Triton `fwd_h/store_ssm_state_to_block_map`
+- 原始 Triton profile 证据: 200k normal `507e` top kernels include `chunk_gated_delta_rule_fwd_kernel_h_blockdim64` `39.70ms/call`, `chunk_fwd_kernel_o` `25.97ms/call`, `recompute_w_u_fwd_kernel` `18.05ms/call`, and `store_ssm_state_to_block_map_kernel` `3.33ms/call`
+- 结论: with RTP cache-state writes enabled, long-context FlyDSL direct-store remains stable at about `1.43-1.47x` vs current optimized Triton and about `2.14-2.23x` vs `507e` original Triton through 200k total/context length; prefix-cache follows the same ratio because both paths compute only current suffix while loading prefix initial state once
+
+### 实验 7: Short-sequence dispatch threshold sweep
+- 状态: 有效
+- 命令形态: `rocprofv3 --kernel-trace --stats` over `tools/benchmarks/bench_flydsl_chunk_gdn_long.py`; short inputs use `iters=30`, `2048/4096` use `iters=15`, `8192` uses `iters=8`; `seq_size_per_block=64`, `ssm_states=bf16`, B=1
+- 场景: normal uses `prefix=0`; prefix-cache uses fixed `prefix=65536` and varies suffix `input_len`; `507e Triton` is detached worktree at `507e404849065c2664d2440273cae30eb0393838`
+
+| Input len | 507e normal us | Current normal us | FlyDSL normal us | FlyDSL vs 507e | FlyDSL vs current | 507e prefix64k us | Current prefix64k us | FlyDSL prefix64k us | FlyDSL vs 507e | FlyDSL vs current |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 108.661 | 125.636 | 124.136 | 0.88x | 1.01x | 106.955 | 125.553 | 116.311 | 0.92x | 1.08x |
+| 17 | 124.407 | 136.439 | 128.392 | 0.97x | 1.06x | 176.374 | 138.386 | 127.604 | 1.38x | 1.08x |
+| 63 | 131.658 | 165.132 | 135.315 | 0.97x | 1.22x | 132.920 | 164.500 | 134.227 | 0.99x | 1.23x |
+| 64 | 137.487 | 164.770 | 124.957 | 1.10x | 1.32x | 138.611 | 158.287 | 122.122 | 1.14x | 1.30x |
+| 65 | 153.167 | 174.767 | 147.391 | 1.04x | 1.19x | 153.602 | 177.720 | 144.519 | 1.06x | 1.23x |
+| 127 | 162.782 | 174.758 | 154.371 | 1.05x | 1.13x | 162.470 | 166.462 | 150.883 | 1.08x | 1.10x |
+| 128 | 164.714 | 176.294 | 137.994 | 1.19x | 1.28x | 164.198 | 169.472 | 134.296 | 1.22x | 1.26x |
+| 256 | 222.939 | 203.475 | 168.750 | 1.32x | 1.21x | 220.192 | 202.136 | 171.682 | 1.28x | 1.18x |
+| 512 | 362.203 | 285.574 | 228.222 | 1.59x | 1.25x | 351.165 | 291.051 | 226.087 | 1.55x | 1.29x |
+| 1024 | 590.561 | 433.394 | 339.649 | 1.74x | 1.28x | 591.773 | 435.945 | 343.219 | 1.72x | 1.27x |
+| 2048 | 1083.682 | 769.450 | 575.830 | 1.88x | 1.34x | 1083.517 | 761.202 | 580.860 | 1.87x | 1.31x |
+| 4096 | 2088.418 | 1431.894 | 1026.279 | 2.03x | 1.40x | 2268.362 | 1434.592 | 1026.546 | 2.21x | 1.40x |
+| 8192 | 4206.173 | 2802.621 | 1953.469 | 2.15x | 1.43x | N/A | N/A | N/A | N/A | N/A |
+
+- 结论: for the current optimized Triton fallback, no length threshold is needed; FlyDSL is at least break-even from `input_len=1`. Against `507e` original Triton, tiny suffixes (`input_len=1/17/63`) can still favor original Triton, while `input_len>=64` favors FlyDSL in both normal and prefix-cache rows except measurement noise. Production decision remains capability/shape gating under the current branch; if rolling back to `507e` Triton as fallback, use a conservative `input_len >= 64` FlyDSL cutoff.
+
 ## 已放弃的方向
 - None
 
 ## 当前状态
 - 当前 Phase: Phase 4 integration
 - 当前 sub-skill: integration-validation
-- 下一步: run rocprofv3 end-to-end comparison under the target deployment command, then continue MI355 warp-specialization from the A-only direct-store baseline
+- 下一步: run rocprofv3 end-to-end comparison under the target deployment command if service commands are provided, then continue MI355 warp-specialization from the A-only direct-store baseline
