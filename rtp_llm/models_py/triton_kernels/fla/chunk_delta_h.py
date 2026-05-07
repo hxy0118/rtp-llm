@@ -328,16 +328,17 @@ def chunk_gated_delta_rule_fwd_h(
     """
     Args:
         state_dtype: dtype of the per-chunk hidden state buffer ``h``.
-            - If explicitly provided by the caller, it is honored on both the
-              generic Triton fallback path and the Gluon/AMD CDNA4 path.
-            - If ``None``:
-                * Generic Triton fallback keeps fp32 as the default (matches
-                  upstream fla semantics; the kernel accumulates in fp32, so
-                  silently downcasting to ``k.dtype`` would lose precision).
-                * Gluon/AMD CDNA4 path falls back to ``initial_state.dtype``
-                  (or ``k.dtype`` when ``initial_state is None``) as an
-                  internal MI355X-only optimization. See
-                  ``chunk_gated_delta_rule_fwd_h_gluon`` for details.
+            When explicitly provided, both the generic Triton fallback and
+            the Gluon/AMD CDNA4 path honor it as-is. When ``None``:
+              * NVIDIA: ``h`` stays fp32 to be bit-level identical to the
+                original upstream fla implementation.
+              * AMD: ``h`` follows ``initial_state.dtype`` (or ``k.dtype``
+                when ``initial_state is None``). Since the upstream caller
+                allocates ``initial_state`` with the user-configured
+                ``ssm_state_dtype``, this transparently lets the AMD
+                ``h`` buffer track the user's ssm_state_dtype without
+                introducing yet another knob, and keeps the AMD generic
+                Triton path consistent with the Gluon/CDNA4 path.
     """
     # Gluon dispatch for AMD CDNA4 (MI355X): ~10-18% faster for TP2 H≤32 T≤64K
     try:
@@ -388,14 +389,19 @@ def chunk_gated_delta_rule_fwd_h(
     assert K <= 256, "current kernel does not support head dimension larger than 256."
 
     # Generic Triton fallback: the kernel accumulates ``b_h*`` in fp32 and
-    # only casts on store. Defaulting to fp32 here preserves precision and
-    # matches upstream fla. Callers that knowingly want a narrower buffer
-    # (e.g. to save memory) must opt in by passing ``state_dtype`` explicitly,
-    # rather than having it silently inferred from ``k.dtype``.
-    if state_dtype is None:
-        h_dtype = torch.float32
-    else:
+    # only casts on store, so the buffer dtype is decoupled from math
+    # precision. Default policy when ``state_dtype is None``:
+    #   * NVIDIA: keep fp32 to stay bit-level identical to upstream fla.
+    #   * AMD: mirror the Gluon path and follow ``initial_state.dtype``
+    #     (which equals the caller's ``ssm_state_dtype``) so the buffer
+    #     is naturally narrowed to e.g. bf16 without an extra parameter,
+    #     and the AMD Triton/Gluon paths produce identical buffer dtypes.
+    if state_dtype is not None:
         h_dtype = state_dtype
+    elif is_amd:
+        h_dtype = initial_state.dtype if initial_state is not None else k.dtype
+    else:
+        h_dtype = torch.float32
     h = k.new_empty(B, NT, H, K, V, dtype=h_dtype)
     final_state = (
         k.new_empty(N, H, K, V, dtype=torch.float32) if output_final_state else None
