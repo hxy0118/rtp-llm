@@ -355,7 +355,13 @@ def chunk_gated_delta_rule_fwd_h(
         H = u.shape[-2]
         T = k.shape[1]
         K = k.shape[-1]
-        if gk is None and _is_gluon_beneficial(H, T, K):
+        V = u.shape[-1]
+        # Pass k.dtype and V so the dispatcher can also block configs that
+        # would silently break correctness (non-{64,128} K, non-16-aligned
+        # V, or non-bf16 dtype) — see ``_is_gluon_beneficial`` docstring.
+        if gk is None and _is_gluon_beneficial(
+            H, T, K, k_dtype=k.dtype, v_dim=V
+        ):
             return chunk_gated_delta_rule_fwd_h_gluon(
                 k=k,
                 w=w,

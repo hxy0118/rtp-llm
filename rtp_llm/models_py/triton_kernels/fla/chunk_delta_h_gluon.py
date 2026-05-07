@@ -20,13 +20,40 @@ from rtp_llm.models_py.triton_kernels.fla.index import (
 
 # Maximum H and T for Gluon advantage (empirically determined)
 GLUON_MAX_H = 32
-GLUON_MAX_K = 128
+# Block tile width hardcoded inside the kernel (two 64-wide tiles when K>64).
+# K must be exactly 64 or 128, otherwise the kernel will read past the K
+# dimension and segfault / corrupt memory.
+GLUON_K_ALLOWED = (64, 128)
+# BV is hardcoded to 16 in the kernel and there are no per-element V masks
+# on the buffer_load/store ops, so V must be a multiple of BV.
+GLUON_BV = 16
+# All shared-memory layouts and dot-operand casts inside the kernel are
+# pinned to bfloat16. Feeding fp16 (or anything else) would silently
+# bit-reinterpret the data and produce scrambled outputs without raising.
+GLUON_SUPPORTED_DTYPES = (torch.bfloat16,)
 
-def _is_gluon_beneficial(H: int, T: int, K: int = 128) -> bool:
-    """Check if Gluon V2 fwd_h is faster than Triton for the given config.
+def _is_gluon_beneficial(
+    H: int,
+    T: int,
+    K: int = 128,
+    *,
+    k_dtype: Optional[torch.dtype] = None,
+    v_dim: Optional[int] = None,
+) -> bool:
+    """Check if Gluon V2 fwd_h is both *correct* and faster than Triton.
 
-    K<=128 only (two 64-wide tiles). Both bf16 and fp32 state win at all T.
-    (fp32: +6-14% across T=4K-64K on MI355X, measured 2026-04-30)
+    The Gluon kernel makes several hardcoded assumptions that the dispatcher
+    must enforce, otherwise correctness is silently broken:
+      * K ∈ {64, 128} — the kernel allocates exactly one or two 64-wide
+        tiles and uses ``if K > 64`` to add the second tile; any K not in
+        this set will read/write past the actual K dim.
+      * V % 16 == 0 — h/v offsets step by ``i_v * BV`` (BV=16) without
+        per-element masks.
+      * inputs are bf16 — smem is allocated as gl.bfloat16 and every
+        ``.to()`` cast inside the kernel targets bfloat16.
+
+    Performance side: K<=128, H<=32, gfx950. Both bf16 and fp32 state win
+    at all T (fp32: +6-14% across T=4K-64K on MI355X, measured 2026-04-30).
     """
     if not GLUON_AVAILABLE:
         return False
@@ -36,7 +63,15 @@ def _is_gluon_beneficial(H: int, T: int, K: int = 128) -> bool:
             return False
     except AttributeError:
         return False
-    if K > GLUON_MAX_K or H > GLUON_MAX_H:
+    # Performance gate
+    if H > GLUON_MAX_H:
+        return False
+    # Correctness gates (kernel hardcoded assumptions)
+    if K not in GLUON_K_ALLOWED:
+        return False
+    if v_dim is not None and v_dim % GLUON_BV != 0:
+        return False
+    if k_dtype is not None and k_dtype not in GLUON_SUPPORTED_DTYPES:
         return False
     return True
 
