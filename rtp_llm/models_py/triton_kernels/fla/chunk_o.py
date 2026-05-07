@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 
 from rtp_llm.models_py.triton_kernels.fla.index import prepare_chunk_indices
-from rtp_llm.models_py.triton_kernels.fla.op import exp2
+from rtp_llm.models_py.triton_kernels.fla.op import exp, exp2, safe_exp
 from rtp_llm.models_py.triton_kernels.fla.utils import (
     check_shared_mem,
     is_amd,
@@ -58,6 +58,7 @@ def chunk_fwd_kernel_o(
     BV: tl.constexpr,
     USE_G: tl.constexpr,
     IS_VARLEN: tl.constexpr,
+    IS_LOG2: tl.constexpr,
 ):
     i_v, i_t, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
@@ -113,17 +114,30 @@ def chunk_fwd_kernel_o(
         g += bos * H + i_h
         p_g = tl.make_block_ptr(g, (T,), (H,), (i_t * BT,), (BT,), (0,))
         b_g = tl.load(p_g, boundary_check=(0,))
-        b_o = b_o * exp2(b_g)[:, None]
-        # g is in log2 domain (cumsum scaled by RCP_LN2 = 1/ln2 in
-        # chunk_local_cumsum on both NVIDIA and AMD). Within each chunk the
-        # cumsum is monotonically non-decreasing (logsigmoid ≤ 0), so
-        # b_g[i] - b_g[j] ≤ 0 for i ≥ j, guaranteeing exp2 ∈ (0, 1].
-        # The m_A mask below zeros out i < j entries.
-        b_A = b_A * exp2(b_g[:, None] - b_g[None, :])
+        if IS_LOG2:
+            # AMD path: g is in log2 domain (RCP_LN2-scaled cumsum upstream).
+            # Within each chunk b_g[i] - b_g[j] ≤ 0 for i ≥ j (cumsum of
+            # logsigmoid ≤ 0), so exp2 ∈ (0, 1]. The m_A mask below zeros
+            # out i < j entries.
+            b_o = b_o * exp2(b_g)[:, None]
+            b_A = b_A * exp2(b_g[:, None] - b_g[None, :])
+        else:
+            # NVIDIA path: g is in natural-log domain, keep exp/safe_exp to
+            # preserve bit-level semantics with the original implementation.
+            b_o = b_o * exp(b_g)[:, None]
+            b_A = b_A * safe_exp(b_g[:, None] - b_g[None, :])
 
-    o_t = i_t * BT + tl.arange(0, BT)
-    m_t = o_t < T
-    m_A = (o_t[:, None] >= o_t[None, :]) & (m_t[:, None] & m_t)
+    if IS_LOG2:
+        # AMD path: also mask out OOB rows/cols at the last chunk so b_A
+        # accumulator never multiplies garbage data when T % BT != 0.
+        o_t = i_t * BT + tl.arange(0, BT)
+        m_t = o_t < T
+        m_A = (o_t[:, None] >= o_t[None, :]) & (m_t[:, None] & m_t)
+    else:
+        # NVIDIA path: keep the original lower-triangular mask only, to be
+        # bit-level identical to the pre-optimization implementation.
+        o_i = tl.arange(0, BT)
+        m_A = o_i[:, None] >= o_i[None, :]
     b_A = tl.where(m_A, b_A, 0)
 
     p_v = tl.make_block_ptr(
@@ -183,6 +197,7 @@ def chunk_fwd_o(
         BT=BT,
         BK=64 if is_amd else 128,
         BV=128 if is_amd else 64,
+        IS_LOG2=is_amd,
         num_warps=(4 if h.dtype == torch.float32 else 1) if is_amd else 4,
         num_stages=1 if is_amd_cdna3 else 2,
     )

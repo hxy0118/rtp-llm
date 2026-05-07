@@ -42,17 +42,18 @@ def chunk_gated_delta_rule_fwd(
     output_final_state: bool,
     cu_seqlens: Optional[torch.LongTensor] = None,
 ):
-    # Scale g to log2 domain (multiply cumsum by 1/ln2) so all downstream
-    # kernels (chunk_o, chunk_delta_h, wy_fast, fused_kkt_solve) can use the
-    # single-instruction exp2 uniformly on both NVIDIA and AMD.
-    g = chunk_local_cumsum(
-        g,
-        chunk_size=64,
-        scale=RCP_LN2,
-        cu_seqlens=cu_seqlens,
-    )
-
+    # AMD: scale g to log2 domain (multiply cumsum by 1/ln2) so AMD-side
+    # downstream kernels can use the single-instruction exp2.
+    # NVIDIA: keep the original natural-log domain. The RCP_LN2 (~1.4427) scale
+    # is not bit-exact in bf16/fp16 and accumulates non-trivial drift over long
+    # contexts, which has been observed to change generation outputs on CUDA.
     if is_amd:
+        g = chunk_local_cumsum(
+            g,
+            chunk_size=64,
+            scale=RCP_LN2,
+            cu_seqlens=cu_seqlens,
+        )
         # AMD-optimized: fused kkt + solve_tril + recompute_w_u
         w, u, A = chunk_gated_delta_rule_fwd_intra(
             k=k,
@@ -62,6 +63,7 @@ def chunk_gated_delta_rule_fwd(
             cu_seqlens=cu_seqlens,
         )
     else:
+        g = chunk_local_cumsum(g, chunk_size=64, cu_seqlens=cu_seqlens)
         # Original pipeline: separate kkt -> solve_tril -> recompute_w_u
         A = chunk_scaled_dot_kkt_fwd(
             k=k, beta=beta, g_cumsum=g, cu_seqlens=cu_seqlens, output_dtype=torch.float32

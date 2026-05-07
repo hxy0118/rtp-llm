@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 
 from rtp_llm.models_py.triton_kernels.fla.index import prepare_chunk_indices
-from rtp_llm.models_py.triton_kernels.fla.op import exp2
+from rtp_llm.models_py.triton_kernels.fla.op import exp, exp2
 from rtp_llm.models_py.triton_kernels.fla.utils import is_amd
 
 
@@ -42,6 +42,7 @@ def recompute_w_u_fwd_kernel(
     BK: tl.constexpr,
     BV: tl.constexpr,
     IS_VARLEN: tl.constexpr,
+    IS_LOG2: tl.constexpr,
 ):
     i_t, i_bh = tl.program_id(0), tl.program_id(1)
     i_b, i_h = i_bh // H, i_bh % H
@@ -64,7 +65,13 @@ def recompute_w_u_fwd_kernel(
     )
     b_beta = tl.load(p_beta, boundary_check=(0,))
     b_A = tl.load(p_A, boundary_check=(0, 1))
-    b_g = exp2(tl.load(p_g, boundary_check=(0,)))
+    if IS_LOG2:
+        # AMD path: g is in log2 domain (RCP_LN2-scaled cumsum upstream).
+        b_g = exp2(tl.load(p_g, boundary_check=(0,)))
+    else:
+        # NVIDIA path: g is in natural-log domain, keep tl.exp for bit-level
+        # parity with the original implementation.
+        b_g = exp(tl.load(p_g, boundary_check=(0,)))
 
     for i_v in range(tl.cdiv(V, BV)):
         p_v = tl.make_block_ptr(
@@ -149,6 +156,7 @@ def recompute_w_u_fwd(
         BT=BT,
         BK=BK,
         BV=BV,
+        IS_LOG2=is_amd,
         num_warps=4,
         num_stages=3,
     )
