@@ -32,21 +32,34 @@ def _make_block_map(
 
 
 def make_inputs(
-    input_len: int, prefix_len: int, seq_size_per_block: int, state_dtype: torch.dtype
+    input_len: int,
+    prefix_len: int,
+    seq_size_per_block: int,
+    state_dtype: torch.dtype,
+    hg: int,
+    h: int,
+    k_dim: int,
+    v_dim: int,
 ):
     device = torch.device("cuda")
-    q = torch.empty(1, input_len, 8, 128, device=device, dtype=torch.bfloat16)
-    k = torch.empty(1, input_len, 8, 128, device=device, dtype=torch.bfloat16)
-    v = torch.empty(1, input_len, 32, 128, device=device, dtype=torch.bfloat16)
-    g = torch.empty(1, input_len, 32, device=device, dtype=torch.bfloat16)
-    beta = torch.empty(1, input_len, 32, device=device, dtype=torch.bfloat16)
+    q = torch.empty(1, input_len, hg, k_dim, device=device, dtype=torch.bfloat16)
+    k = torch.empty(1, input_len, hg, k_dim, device=device, dtype=torch.bfloat16)
+    v = torch.empty(1, input_len, h, v_dim, device=device, dtype=torch.bfloat16)
+    g = torch.empty(1, input_len, h, device=device, dtype=torch.bfloat16)
+    beta = torch.empty(1, input_len, h, device=device, dtype=torch.bfloat16)
     cu = torch.tensor([0, input_len], device=device, dtype=torch.long)
     prefix = torch.tensor([prefix_len], device=device, dtype=torch.int32)
     block_map, block_shape = _make_block_map(prefix_len + input_len, seq_size_per_block)
     ssm_states = torch.empty(
-        int(block_shape.item()), 32, 128, 128, device=device, dtype=state_dtype
+        int(block_shape.item()), h, v_dim, k_dim, device=device, dtype=state_dtype
     )
-    initial_state = torch.empty(1, 32, 128, 128, device=device, dtype=state_dtype)
+    initial_state = torch.empty(1, h, v_dim, k_dim, device=device, dtype=state_dtype)
+    q.fill_(0.25)
+    k.fill_(0.125)
+    v.fill_(0.5)
+    g.fill_(-0.5)
+    beta.fill_(0.5)
+    ssm_states.zero_()
     return q, k, v, g, beta, cu, prefix, block_map, ssm_states, initial_state
 
 
@@ -116,18 +129,32 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iters", type=int, default=5)
     parser.add_argument("--state-dtype", choices=["bf16", "fp32"], default="bf16")
+    parser.add_argument("--hg", type=int, default=8)
+    parser.add_argument("--h", type=int, default=32)
+    parser.add_argument("--k-dim", type=int, default=128)
+    parser.add_argument("--v-dim", type=int, default=128)
     args = parser.parse_args()
 
     if args.input_len <= 0:
         raise ValueError("--input-len must be positive")
     if args.prefix_len < 0:
         raise ValueError("--prefix-len must be non-negative")
+    if args.hg <= 0 or args.h <= 0:
+        raise ValueError("--hg and --h must be positive")
+    if args.h % args.hg != 0:
+        raise ValueError("--h must be divisible by --hg")
+    if args.k_dim != 128 or args.v_dim != 128:
+        raise ValueError("Only K=V=128 is supported by the current FlyDSL sweep")
 
     tensors = make_inputs(
         args.input_len,
         args.prefix_len,
         args.seq_size_per_block,
         _state_dtype(args.state_dtype),
+        args.hg,
+        args.h,
+        args.k_dim,
+        args.v_dim,
     )
 
     for _ in range(args.warmup):

@@ -127,10 +127,110 @@ TBD
 
 - 结论: for the current optimized Triton fallback, no length threshold is needed; FlyDSL is at least break-even from `input_len=1`. Against `507e` original Triton, tiny suffixes (`input_len=1/17/63`) can still favor original Triton, while `input_len>=64` favors FlyDSL in both normal and prefix-cache rows except measurement noise. Production decision remains capability/shape gating under the current branch; if rolling back to `507e` Triton as fallback, use a conservative `input_len >= 64` FlyDSL cutoff.
 
+### 实验 8: Qwen3.5/Qwen3.6 Chunk-GDN shape inventory
+- 状态: 有效
+- 本机权重: `/root/Qwen3.5-27B/config.json` only; no local Qwen3.6 checkpoint/config found under `/root`
+- 公开配置来源: Qwen3.5/Qwen3.6 public config snippets from Hugging Face/ModelScope search; values below are the linear-attention GDN shape fields relevant to FlyDSL
+- RTP shape rule: global `(Hg,H,K,V)=(linear_num_key_heads, linear_num_value_heads, linear_key_head_dim, linear_value_head_dim)`; local runtime shape divides `Hg` and `H` by `attn_tp_size`
+- Coverage requirement: Qwen3.5/Qwen3.6 models at 35B and below must support TP1 and TP2; larger models must support TP1, TP2, TP4, and TP8
+- Coverage audit: after applying that TP policy, no additional runtime shapes were found beyond the 10-shape set below; current public Qwen3.6 coverage found is 27B and 35B-A3B, with no local or public Qwen3.6 `>35B` GDN shape found in this pass
+
+| Size bucket | Family/model(s) | Global GDN `(Hg,H,K,V)` | group `H/Hg` | Required TP | Required runtime `(Hg,H,K,V)` | Current FlyDSL |
+|---|---|---:|---:|---:|---:|---|
+| <=35B | Qwen3.5-0.8B, Qwen3.5-2B | `(16,16,128,128)` | 1 | TP1 | `(16,16,128,128)` | yes |
+| <=35B | Qwen3.5-0.8B, Qwen3.5-2B | `(16,16,128,128)` | 1 | TP2 | `(8,8,128,128)` | yes |
+| <=35B | Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-35B-A3B, Qwen3.6-35B-A3B | `(16,32,128,128)` | 2 | TP1 | `(16,32,128,128)` | yes |
+| <=35B | Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-35B-A3B, Qwen3.6-35B-A3B | `(16,32,128,128)` | 2 | TP2 | `(8,16,128,128)` | yes |
+| <=35B | Qwen3.5-27B, Qwen3.6-27B | `(16,48,128,128)` | 3 | TP1 | `(16,48,128,128)` | yes |
+| <=35B | Qwen3.5-27B, Qwen3.6-27B | `(16,48,128,128)` | 3 | TP2 | `(8,24,128,128)` | yes |
+| >35B | Qwen3.5-122B-A10B, Qwen3.5-397B-A17B | `(16,64,128,128)` | 4 | TP1 | `(16,64,128,128)` | yes |
+| >35B | Qwen3.5-122B-A10B, Qwen3.5-397B-A17B | `(16,64,128,128)` | 4 | TP2 | `(8,32,128,128)` | yes |
+| >35B | Qwen3.5-122B-A10B, Qwen3.5-397B-A17B | `(16,64,128,128)` | 4 | TP4 | `(4,16,128,128)` | yes |
+| >35B | Qwen3.5-122B-A10B, Qwen3.5-397B-A17B | `(16,64,128,128)` | 4 | TP8 | `(2,8,128,128)` | yes |
+
+Shape-generalization implications:
+
+- Unique runtime shape set to support: `(16,16,128,128)`, `(8,8,128,128)`, `(16,32,128,128)`, `(8,16,128,128)`, `(16,48,128,128)`, `(8,24,128,128)`, `(16,64,128,128)`, `(8,32,128,128)`, `(4,16,128,128)`, `(2,8,128,128)`.
+- Current FlyDSL supports all 10 target runtime shapes after SG-V4; there is no unsupported shape left inside this Qwen3.5/Qwen3.6 target set.
+- First kernel target should keep `K=V=128` and `BLOCK_DV=64`, but parameterize local `Hg`, local `H`, and `group=H//Hg` instead of hard-coding local `(Hg,H)=(8,32)`.
+- Qwen3.5-27B and Qwen3.6-27B specifically require `(16,48,128,128)` under TP1 and `(8,24,128,128)` under TP2, so the existing FlyDSL validation must not route them to the current `(8,32)` specialization.
+- RTP should keep shape-aware fallback to Triton for future shapes outside this target set until each FlyDSL specialization passes correctness with direct `ssm_states` store and prefix-cache.
+- SG-V4 handoff for completed shape support lives in `/root/wenhua_code/flydsl/chunk_gdn_flydsl_workspace/megakernel/shape_generalization_next_handoff.md`.
+
+### 实验 9: All-supported-shape performance sweep
+- 状态: 有效；全矩阵已跑完，两个 Triton baseline 配置稳定 GPU memory fault，已记录为缺失 baseline。
+- 目标: 对 SG-V4 已支持的 10 个 runtime shape，复用实验 6 和实验 7 的序列长度，分别比较 `507e Triton`、`Current normal` 和 `FlyDSL direct-store` 的 RTP operator 性能。
+- Benchmark 改动: `tools/benchmarks/bench_flydsl_chunk_gdn_long.py` 增加 `--hg/--h/--k-dim/--v-dim`，按 shape 分配 `q/k=[1,input_len,Hg,128]`、`v=[1,input_len,H,128]`、`g/beta=[1,input_len,H]`、`ssm_states=[blocks,H,128,128]`、`initial_state=[1,H,128,128]`；输入改为稳定常数，避免 `torch.empty` 中异常值影响 profile。
+- Profiling 规则: 只使用 `rocprofv3 --kernel-trace --stats` 产出性能结论；不使用 `do_bench`、手工 timing 或 `torch.cuda.Event` timing。
+- 三条路径:
+  - `507e Triton`: detached worktree at `507e404849065c2664d2440273cae30eb0393838`, `USE_FLYDSL` unset/0, runs `chunk_gated_delta_rule + store_ssm_state_to_block_map`;
+  - `Current normal`: current branch, `USE_FLYDSL` unset/0, same Triton cache-state path;
+  - `FlyDSL direct-store`: current branch, `USE_FLYDSL=1`, runs `chunk_gated_delta_rule_flydsl_with_cache_store`.
+- 执行矩阵:
+  - FlyDSL: 330 configs, 7740 operator groups parsed.
+  - Current normal: 328 configs, 7726 operator groups parsed.
+  - 507e Triton: 328 configs, 7726 operator groups parsed.
+  - Missing baseline configs: `(16,48,128,128)` and `(16,64,128,128)` at long normal `input_len=200000`; both current and 507e Triton reproduce GPU memory access fault, while FlyDSL completes.
+- Artifacts:
+  - combined: `/tmp/kernel_opt_chunk_gdn_shape_generalization/exp9_profile_all_shapes/exp9_combined_results.csv`，包含 `model_tp` 列
+  - FlyDSL: `/tmp/kernel_opt_chunk_gdn_shape_generalization/exp9_profile_all_shapes/flydsl/flydsl_all_results.csv`
+  - Current normal: `/tmp/kernel_opt_chunk_gdn_shape_generalization/exp9_profile_all_shapes/current/current_all_results.csv`
+  - 507e Triton: `/tmp/kernel_opt_chunk_gdn_shape_generalization/exp9_profile_all_shapes/triton_507e/triton_507e_all_results.csv`
+  - parser/runner: `/tmp/kernel_opt_chunk_gdn_shape_generalization/exp9_all_shapes_driver.py`, `/tmp/kernel_opt_chunk_gdn_shape_generalization/exp9_parse_rocprof.py`, `/tmp/kernel_opt_chunk_gdn_shape_generalization/exp9_combine_results.py`
+- Trace gate: FlyDSL parsed rows have `has_chunk_gated_delta_rule_fwd_kernel_h_blockdim64=no` and `has_store_ssm_state_to_block_map_kernel=no` for every measured config.
+- Speedup summary, `baseline / FlyDSL`; `>1.0x` means FlyDSL faster:
+
+| Shape | Model / TP | Long vs 507e | Long vs current | Short vs 507e | Short vs current | Missing baseline configs |
+|---:|---|---:|---:|---:|---:|---|
+| `(16,16,128,128)` | Qwen3.5 0.8B/2B TP1 | `1.208-1.262x` | `1.056-1.085x` | `0.697-1.209x` | `0.877-1.178x` | none |
+| `(8,8,128,128)` | Qwen3.5 0.8B/2B TP2 | `0.848-0.933x` | `0.832-0.844x` | `0.678-0.919x` | `0.843-1.151x` | none |
+| `(16,32,128,128)` | Qwen3.5 4B/9B/35B-A3B; Qwen3.6 35B-A3B TP1 | `2.129-2.201x` | `1.417-1.457x` | `0.775-2.130x` | `0.949-1.421x` | none |
+| `(8,16,128,128)` | Qwen3.5 4B/9B/35B-A3B; Qwen3.6 35B-A3B TP2 | `1.225-1.284x` | `1.091-1.108x` | `0.685-1.223x` | `0.946-1.230x` | none |
+| `(16,48,128,128)` | Qwen3.5/3.6 27B TP1 | `1.730-1.840x` | `1.245-1.264x` | `0.811-1.730x` | `0.972-1.243x` | normal `input_len=200000` |
+| `(8,24,128,128)` | Qwen3.5/3.6 27B TP2 | `1.886-1.978x` | `1.234-1.283x` | `0.784-1.888x` | `0.932-1.234x` | none |
+| `(16,64,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP1 | `2.251-2.318x` | `1.461-1.487x` | `0.920-2.255x` | `0.908-1.471x` | normal `input_len=200000` |
+| `(8,32,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP2 | `2.148-2.229x` | `1.428-1.460x` | `0.772-2.146x` | `0.920-1.426x` | none |
+| `(4,16,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP4 | `1.215-1.300x` | `1.090-1.109x` | `0.681-1.215x` | `0.891-1.287x` | none |
+| `(2,8,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP8 | `0.876-0.932x` | `0.874-0.888x` | `0.650-0.914x` | `0.866-1.232x` | none |
+
+- 长序列分类，使用实验 6 的 normal/prefix50 矩阵:
+  - `507e Triton`: 原始 Triton baseline，长序列中通常最慢，尤其是 `H>=24` 的 model/TP 组合；仍保留外部 `chunk_gated_delta_rule_fwd_kernel_h_blockdim64` 和 `store_ssm_state_to_block_map_kernel`。
+  - `Current normal`: 当前分支 Triton 已明显优于 507e，但仍需要外部 `fwd_h + store_ssm_state_to_block_map`；对小 head-count 的 `(8,8)` 和 `(2,8)` 长序列比 FlyDSL 更快。
+  - `FlyDSL direct-store`: 对 `H>=16` 的长序列基本为正收益，`(16,32)/(16,64)/(8,32)` 最明显；对 `(8,8)` 和 `(2,8)` 负收益，说明小 head-count 下 megakernel 固定开销超过 direct-store 融合收益。
+- 短序列分类，使用实验 7 的 normal/prefix64k 矩阵:
+  - `507e Triton`: 在很短 suffix，特别是 `input_len=1/17/63` 和小 head-count 时仍可能有优势；随着 input_len 增大，对中大 head-count 明显落后。
+  - `Current normal`: 短序列最稳定，是小 head-count 的更稳 fallback；但对 `H>=24` 且 `input_len` 较大时，FlyDSL 通常追上或超过它。
+  - `FlyDSL direct-store`: 消除了外部 `fwd_h/store`，但短序列 launch 和 megakernel 固定成本占比高；不适合无条件覆盖所有短序列，建议后续按 shape 和长度加阈值。
+
+- Representative 200k rows, long-context units are ms:
+
+| Shape | Model / TP | Scenario | Input len | 507e ms | Current ms | FlyDSL ms | vs 507e | vs current |
+|---:|---|---|---:|---:|---:|---:|---:|---:|
+| `(16,16,128,128)` | Qwen3.5 0.8B/2B TP1 | normal | 200000 | 54.059 | 46.448 | 42.841 | `1.262x` | `1.084x` |
+| `(16,16,128,128)` | Qwen3.5 0.8B/2B TP1 | prefix50 | 100032 | 27.009 | 23.232 | 21.512 | `1.255x` | `1.080x` |
+| `(8,8,128,128)` | Qwen3.5 0.8B/2B TP2 | normal | 200000 | 36.316 | 34.022 | 40.692 | `0.892x` | `0.836x` |
+| `(8,8,128,128)` | Qwen3.5 0.8B/2B TP2 | prefix50 | 100032 | 18.055 | 17.122 | 20.401 | `0.885x` | `0.839x` |
+| `(16,32,128,128)` | Qwen3.5 4B/9B/35B-A3B; Qwen3.6 35B-A3B TP1 | normal | 200000 | 102.696 | 67.989 | 46.663 | `2.201x` | `1.457x` |
+| `(16,32,128,128)` | Qwen3.5 4B/9B/35B-A3B; Qwen3.6 35B-A3B TP1 | prefix50 | 100032 | 50.978 | 33.669 | 23.398 | `2.179x` | `1.439x` |
+| `(8,16,128,128)` | Qwen3.5 4B/9B/35B-A3B; Qwen3.6 35B-A3B TP2 | normal | 200000 | 52.629 | 45.457 | 41.044 | `1.282x` | `1.108x` |
+| `(8,16,128,128)` | Qwen3.5 4B/9B/35B-A3B; Qwen3.6 35B-A3B TP2 | prefix50 | 100032 | 26.292 | 22.577 | 20.516 | `1.282x` | `1.100x` |
+| `(16,48,128,128)` | Qwen3.5/3.6 27B TP1 | normal | 200000 | FAIL | FAIL | 88.371 | N/A | N/A |
+| `(16,48,128,128)` | Qwen3.5/3.6 27B TP1 | prefix50 | 100032 | 78.217 | 55.941 | 44.269 | `1.767x` | `1.264x` |
+| `(8,24,128,128)` | Qwen3.5/3.6 27B TP2 | normal | 200000 | 87.710 | 56.894 | 44.352 | `1.978x` | `1.283x` |
+| `(8,24,128,128)` | Qwen3.5/3.6 27B TP2 | prefix50 | 100032 | 43.777 | 28.226 | 22.215 | `1.971x` | `1.271x` |
+| `(16,64,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP1 | normal | 200000 | FAIL | FAIL | 91.605 | N/A | N/A |
+| `(16,64,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP1 | prefix50 | 100032 | 106.494 | 68.106 | 45.950 | `2.318x` | `1.482x` |
+| `(8,32,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP2 | normal | 200000 | 102.632 | 67.206 | 46.036 | `2.229x` | `1.460x` |
+| `(8,32,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP2 | prefix50 | 100032 | 50.928 | 33.271 | 23.024 | `2.212x` | `1.445x` |
+| `(4,16,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP4 | normal | 200000 | 52.415 | 44.720 | 40.326 | `1.300x` | `1.109x` |
+| `(4,16,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP4 | prefix50 | 100032 | 26.035 | 22.278 | 20.237 | `1.286x` | `1.101x` |
+| `(2,8,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP8 | normal | 200000 | 34.830 | 33.148 | 37.353 | `0.932x` | `0.887x` |
+| `(2,8,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP8 | prefix50 | 100032 | 17.377 | 16.573 | 18.712 | `0.929x` | `0.886x` |
+
 ## 已放弃的方向
 - None
 
 ## 当前状态
-- 当前 Phase: Phase 4 integration
-- 当前 sub-skill: integration-validation
-- 下一步: run rocprofv3 end-to-end comparison under the target deployment command if service commands are provided, then continue MI355 warp-specialization from the A-only direct-store baseline
+- 当前 Phase: Phase 5 validation/performance sweep
+- 当前 sub-skill: final-validation
+- 下一步: tiny suffix `input_len=1/17` 和 Qwen3.5 0.8B/2B shapes 暂不作为下一轮重点。P0 优化 Qwen3.5 122B-A10B/397B-A17B TP8 `(2,8,128,128)` long-context 负收益；P1 定位并优化 Qwen3.5 9B TP2 `(8,16,128,128)` 的长序列和非 tiny 短序列，短序列先看 `input_len=512`，再 spot-check `2048/8192`。另需单独调查 Triton baseline 在 `(16,48)/(16,64)` long normal `input_len=200000` 的 memory fault。

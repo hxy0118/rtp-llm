@@ -32,6 +32,34 @@ from rtp_llm.models_py.triton_kernels.fla.wy_fast import recompute_w_u_fwd
 
 RCP_LN2 = 1.0 / 0.6931471805599453
 _TRUE_ENV_VALUES = {"1", "true", "t", "yes", "y", "on"}
+FLYDSL_CHUNK_GDN_TARGET_SHAPES = frozenset(
+    {
+        (16, 16, 128, 128),
+        (8, 8, 128, 128),
+        (16, 32, 128, 128),
+        (8, 16, 128, 128),
+        (16, 48, 128, 128),
+        (8, 24, 128, 128),
+        (16, 64, 128, 128),
+        (8, 32, 128, 128),
+        (4, 16, 128, 128),
+        (2, 8, 128, 128),
+    }
+)
+FLYDSL_CHUNK_GDN_ENABLED_SHAPES = frozenset(
+    {
+        (16, 16, 128, 128),
+        (8, 8, 128, 128),
+        (16, 32, 128, 128),
+        (8, 16, 128, 128),
+        (16, 48, 128, 128),
+        (16, 64, 128, 128),
+        (8, 24, 128, 128),
+        (8, 32, 128, 128),
+        (4, 16, 128, 128),
+        (2, 8, 128, 128),
+    }
+)
 
 
 def _use_flydsl_chunk_gdn() -> bool:
@@ -40,6 +68,33 @@ def _use_flydsl_chunk_gdn() -> bool:
 
 def is_flydsl_chunk_gdn_enabled() -> bool:
     return _use_flydsl_chunk_gdn()
+
+
+def _flydsl_chunk_gdn_shape(
+    q: torch.Tensor, v: torch.Tensor
+) -> tuple[int, int, int, int]:
+    _, _, Hg, K = q.shape
+    _, _, H, V = v.shape
+    return (Hg, H, K, V)
+
+
+def is_flydsl_chunk_gdn_shape_supported(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    beta: torch.Tensor,
+) -> bool:
+    if not _use_flydsl_chunk_gdn() or not is_amd:
+        return False
+    if (
+        q.dtype != torch.bfloat16
+        or k.dtype != torch.bfloat16
+        or v.dtype != torch.bfloat16
+    ):
+        return False
+    if beta.dtype != torch.bfloat16:
+        return False
+    return _flydsl_chunk_gdn_shape(q, v) in FLYDSL_CHUNK_GDN_ENABLED_SHAPES
 
 
 def _validate_flydsl_chunk_gdn_inputs(
@@ -61,8 +116,14 @@ def _validate_flydsl_chunk_gdn_inputs(
         errors.append(f"q/k/v must be bf16, got {q.dtype}/{k.dtype}/{v.dtype}")
     if beta.dtype != torch.bfloat16:
         errors.append(f"beta must be bf16, got {beta.dtype}")
-    if (Hg, H, K, V) != (8, 32, 128, 128):
-        errors.append(f"expected Hg/H/K/V=(8,32,128,128), got {(Hg, H, K, V)}")
+    shape = (Hg, H, K, V)
+    if shape not in FLYDSL_CHUNK_GDN_ENABLED_SHAPES:
+        target_note = (
+            "target shape pending correctness"
+            if shape in FLYDSL_CHUNK_GDN_TARGET_SHAPES
+            else "not in Qwen3.5/Qwen3.6 target set"
+        )
+        errors.append(f"unsupported Hg/H/K/V={shape} ({target_note})")
     if B < 1 or T < 1:
         errors.append(f"expected non-empty input, got B={B}, T={T}")
     if errors:
@@ -102,7 +163,7 @@ def chunk_gated_delta_rule_fwd(
             beta=beta,
             cu_seqlens=cu_seqlens,
         )
-        if _use_flydsl_chunk_gdn():
+        if is_flydsl_chunk_gdn_shape_supported(q=q, k=k, v=v, beta=beta):
             _validate_flydsl_chunk_gdn_inputs(q=q, k=k, v=v, beta=beta)
             from rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi300x import (
                 megakernel_fwd,

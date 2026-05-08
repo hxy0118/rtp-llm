@@ -79,11 +79,13 @@ def build_megakernel(
     use_initial_state=False,
     store_ssm_state=False,
     ssm_state_dtype=None,
+    h_size=H_SIZE,
+    hg_size=Hg_SIZE,
 ):
     K = K_SIZE
     V = V_SIZE
-    H = H_SIZE
-    Hg = Hg_SIZE
+    H = h_size
+    Hg = hg_size
 
     LDS_KT_ELEMS = BT * STRIDE_KT  # 8960
     LDS_Q_ELEMS = BT * STRIDE_Q  # 8960
@@ -1012,7 +1014,7 @@ def build_megakernel(
         with ir.InsertionPoint(ctx.gpu_module_body):
             allocator.finalize()
 
-        grid_x = (V_SIZE // BLOCK_DV) * N_val * H_SIZE
+        grid_x = (V_SIZE // BLOCK_DV) * N_val * H
         megakernel_fn(
             q_ptr,
             k_ptr,
@@ -1084,6 +1086,10 @@ def _launch_tail_safe_into(
     else:
         N = B
     cache_key = (
+        H,
+        Hg,
+        K,
+        V,
         use_h0,
         use_vl,
         store_ssm_state,
@@ -1095,6 +1101,8 @@ def _launch_tail_safe_into(
             use_initial_state=use_h0,
             store_ssm_state=store_ssm_state,
             ssm_state_dtype=ssm_states.dtype if store_ssm_state else None,
+            h_size=H,
+            hg_size=Hg,
         )
     fn = _megakernel_cache[cache_key]
 
@@ -1186,6 +1194,10 @@ def _launch_fast_into(
         N = B
 
     cache_key = (
+        H,
+        Hg,
+        K,
+        V,
         use_h0,
         use_vl,
         store_ssm_state,
@@ -1197,6 +1209,8 @@ def _launch_fast_into(
             use_initial_state=use_h0,
             store_ssm_state=store_ssm_state,
             ssm_state_dtype=ssm_states.dtype if store_ssm_state else None,
+            h_size=H,
+            hg_size=Hg,
         )
     fn = fast._megakernel_cache[cache_key]
 

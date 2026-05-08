@@ -8,7 +8,7 @@
 - kernel type: Qwen3-Next Chunk-GDN fused forward
 
 ## Inputs
-- shapes: RTP production Chunk-GDN shape `(Hg,H,K,V)=(8,32,128,128)`
+- shapes: all 10 Qwen3.5/Qwen3.6 target runtime Chunk-GDN shapes are FlyDSL-enabled: `(16,16)`, `(8,8)`, `(16,32)`, `(8,16)`, `(16,48)`, `(8,24)`, `(16,64)`, `(8,32)`, `(4,16)`, `(2,8)` with `K=V=128`
 - reference: Triton FLA Chunk-GDN path in `rtp_llm/models_py/triton_kernels/fla`
 - correctness threshold: `cos_o > 0.999`, `cos_ht > 0.999`; cache state must match default Triton store
 
@@ -36,3 +36,5 @@
 - V5 | measured | isolated cost of writing `h_acc` to RTP `ssm_states` inside the FlyDSL megakernel | direct-store adds `+10.9us/+9.5%(T=128)`, `+22.4us/+7.8%(T=1024)`, `+10.0us/+2.8%(T=1025)`, `+82.9us/+9.6%(T=4097)`, `+233.4us/+7.0%(T=16384)` versus the same A-only FlyDSL path without cache-state writes; profile confirms no Triton `fwd_h`, no `store_ssm_state_to_block_map`, and no `recompute_w_u`
 - V6 | measured | long-context RTP operator profile with `h -> ssm_states` enabled, `seq_size_per_block=64`, `ssm_states=bf16`, normal and prefix-cache scenarios to 200k | FlyDSL direct-store speedup vs Triton is `1.43x/1.44x/1.45x/1.47x` for normal total lengths `16k/64k/128k/200k`; prefix-cache with `prefix ~= total/2` is `1.44x/1.45x/1.43x/1.46x`; 200k FlyDSL profile has no external Triton `fwd_h` or `store_ssm_state_to_block_map`
 - V7 | measured | short-sequence threshold sweep with `h -> ssm_states` enabled, normal `input=1..8192` and prefix-cache `prefix=64k,input=1..4096`; also retested original Triton at `507e404849065c2664d2440273cae30eb0393838` | vs current optimized Triton, no crossover found and no length threshold is needed; vs `507e` original Triton, tiny suffixes `input=1/17/63` can favor original Triton, while `input>=64` favors FlyDSL in the measured rows; production decision stays capability/shape gating for current branch, but a rollback-to-507e fallback should use `input_len>=64`
+- V8 | collected | Qwen3.5/Qwen3.6 public/local linear-attention shape inventory for FlyDSL shape generalization | public configs cover GDN group ratios `H/Hg in {1,2,3,4}` with `K=V=128`; small models (<=35B) need TP1/TP2, large models need TP1/TP2/TP4/TP8; local `/root/Qwen3.5-27B` is global `(16,48,128,128)`, TP2 local `(8,24,128,128)`; no additional runtime shapes were found after applying the TP policy, and no local/public Qwen3.6 `>35B` GDN shape was found in this pass
+- V9 | completed | generalized RTP and FlyDSL megakernel wrappers to all 10 target runtime shapes | `USE_FLYDSL=1` now admits all 10 validated shapes while future shapes stay on Triton; single-operator workspace wrapper exports the same shape set; next optimization priorities are 397B/122B TP8 `(2,8,128,128)` long-context regression and 9B TP2 `(8,16,128,128)` long/non-tiny-short tuning

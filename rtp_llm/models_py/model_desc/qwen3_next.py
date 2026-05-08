@@ -36,6 +36,7 @@ from rtp_llm.models_py.triton_kernels.fla.chunk import (
     chunk_gated_delta_rule,
     chunk_gated_delta_rule_flydsl_with_cache_store,
     is_flydsl_chunk_gdn_enabled,
+    is_flydsl_chunk_gdn_shape_supported,
 )
 from rtp_llm.models_py.triton_kernels.fla.fused_recurrent import (
     fused_recurrent_gated_delta_rule,
@@ -252,7 +253,9 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
         key = key.view(1, key.shape[0], self.local_num_k_heads, self.head_k_dim)
         value = value.view(1, value.shape[0], self.local_num_v_heads, self.head_v_dim)
         use_flydsl_direct_store = (
-            is_flydsl_chunk_gdn_enabled() and ssm_states is not None
+            is_flydsl_chunk_gdn_enabled()
+            and ssm_states is not None
+            and is_flydsl_chunk_gdn_shape_supported(query, key, value, beta)
         )
         if use_flydsl_direct_store:
             attn_out, final_state = chunk_gated_delta_rule_flydsl_with_cache_store(
@@ -672,7 +675,9 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         value = value.view(1, -1, gdn.local_num_v_heads, gdn.head_v_dim)
 
         use_flydsl_direct_store = (
-            is_flydsl_chunk_gdn_enabled() and ssm_states is not None
+            is_flydsl_chunk_gdn_enabled()
+            and ssm_states is not None
+            and is_flydsl_chunk_gdn_shape_supported(query, key, value, beta)
         )
         if use_flydsl_direct_store:
             attn_out, final_state = chunk_gated_delta_rule_flydsl_with_cache_store(
