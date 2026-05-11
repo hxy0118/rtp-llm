@@ -89,6 +89,23 @@ class FlyDSLChunkGDNShapeGateTest(unittest.TestCase):
                     )
                 )
 
+    def test_sequence_gate_requires_single_64_aligned_sequence(self):
+        q = torch.empty(1, 64, 8, 128, dtype=torch.bfloat16)
+        self.assertTrue(chunk.is_flydsl_chunk_gdn_sequence_supported(q, None))
+        self.assertTrue(
+            chunk.is_flydsl_chunk_gdn_sequence_supported(
+                q, torch.tensor([0, 64], dtype=torch.long)
+            )
+        )
+
+        short_q = torch.empty(1, 63, 8, 128, dtype=torch.bfloat16)
+        self.assertFalse(chunk.is_flydsl_chunk_gdn_sequence_supported(short_q, None))
+        self.assertFalse(
+            chunk.is_flydsl_chunk_gdn_sequence_supported(
+                q, torch.tensor([0, 32, 64], dtype=torch.long)
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

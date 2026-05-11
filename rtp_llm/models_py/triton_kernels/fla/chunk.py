@@ -97,6 +97,20 @@ def is_flydsl_chunk_gdn_shape_supported(
     return _flydsl_chunk_gdn_shape(q, v) in FLYDSL_CHUNK_GDN_ENABLED_SHAPES
 
 
+def is_flydsl_chunk_gdn_sequence_supported(
+    q: torch.Tensor,
+    cu_seqlens: Optional[torch.Tensor],
+) -> bool:
+    # The MI308X FlyDSL megakernel fast path is validated for single-sequence
+    # prefill with 64-token chunk alignment. Non-aligned tails currently fall
+    # back to Triton in RTP to avoid device-side asserts in short requests.
+    if q.shape[1] % 64 != 0:
+        return False
+    if cu_seqlens is None:
+        return True
+    return len(cu_seqlens) == 2
+
+
 def _validate_flydsl_chunk_gdn_inputs(
     q: torch.Tensor,
     k: torch.Tensor,
