@@ -252,22 +252,29 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
         query = query.view(1, query.shape[0], self.local_num_k_heads, self.head_k_dim)
         key = key.view(1, key.shape[0], self.local_num_k_heads, self.head_k_dim)
         value = value.view(1, value.shape[0], self.local_num_v_heads, self.head_v_dim)
-        use_flydsl_direct_store = (
+        use_flydsl_chunk_gdn = (
             is_flydsl_chunk_gdn_enabled()
-            and ssm_states is not None
             and is_flydsl_chunk_gdn_shape_supported(query, key, value, beta)
         )
-        if use_flydsl_direct_store:
+        if use_flydsl_chunk_gdn:
             attn_out, final_state = chunk_gated_delta_rule_flydsl_with_cache_store(
                 query,
                 key,
                 value,
                 g,
                 beta,
-                prefix_lengths=attn_inputs.prefix_lengths_d,
-                block_map=attn_inputs.kv_cache_kernel_block_id_device,
+                prefix_lengths=(
+                    attn_inputs.prefix_lengths_d if ssm_states is not None else None
+                ),
+                block_map=(
+                    attn_inputs.kv_cache_kernel_block_id_device
+                    if ssm_states is not None
+                    else None
+                ),
                 ssm_states=ssm_states,
-                seq_size_per_block=seq_size_per_block,
+                seq_size_per_block=(
+                    seq_size_per_block if ssm_states is not None else None
+                ),
                 initial_state=initial_states,
                 output_final_state=True,
                 cu_seqlens=cu_seqlens_without_padding,
@@ -285,7 +292,7 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
                 cu_seqlens=cu_seqlens_without_padding,
                 use_qk_l2norm_in_kernel=True,
             )
-        if ssm_states is not None and not use_flydsl_direct_store:
+        if ssm_states is not None and not use_flydsl_chunk_gdn:
             store_ssm_state_to_block_map(
                 h,
                 final_state,
@@ -674,22 +681,31 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         key = key.view(1, -1, gdn.local_num_k_heads, gdn.head_k_dim)
         value = value.view(1, -1, gdn.local_num_v_heads, gdn.head_v_dim)
 
-        use_flydsl_direct_store = (
+        use_flydsl_chunk_gdn = (
             is_flydsl_chunk_gdn_enabled()
-            and ssm_states is not None
             and is_flydsl_chunk_gdn_shape_supported(query, key, value, beta)
         )
-        if use_flydsl_direct_store:
+        if use_flydsl_chunk_gdn:
             attn_out, final_state = chunk_gated_delta_rule_flydsl_with_cache_store(
                 query,
                 key,
                 value,
                 g,
                 beta,
-                prefix_lengths=attention_inputs.prefix_lengths_d,
-                block_map=attention_inputs.kv_cache_kernel_block_id_device,
+                prefix_lengths=(
+                    attention_inputs.prefix_lengths_d
+                    if ssm_states is not None
+                    else None
+                ),
+                block_map=(
+                    attention_inputs.kv_cache_kernel_block_id_device
+                    if ssm_states is not None
+                    else None
+                ),
                 ssm_states=ssm_states,
-                seq_size_per_block=seq_size_per_block,
+                seq_size_per_block=(
+                    seq_size_per_block if ssm_states is not None else None
+                ),
                 initial_state=initial_states,
                 output_final_state=True,
                 cu_seqlens=full_cu,
@@ -708,7 +724,7 @@ class Qwen3NextGatedDeltaNet(nn.Module):
                 use_qk_l2norm_in_kernel=True,
             )
 
-        if ssm_states is not None and not use_flydsl_direct_store:
+        if ssm_states is not None and not use_flydsl_chunk_gdn:
             store_ssm_state_to_block_map(
                 h,
                 final_state,

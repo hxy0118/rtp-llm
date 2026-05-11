@@ -213,10 +213,10 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
     v: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor,
-    prefix_lengths: torch.Tensor,
-    block_map: torch.Tensor,
-    ssm_states: torch.Tensor,
-    seq_size_per_block: int,
+    prefix_lengths: Optional[torch.Tensor] = None,
+    block_map: Optional[torch.Tensor] = None,
+    ssm_states: Optional[torch.Tensor] = None,
+    seq_size_per_block: Optional[int] = None,
     scale: float = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = True,
@@ -224,13 +224,18 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
     head_first: bool = False,
     use_qk_l2norm_in_kernel: bool = False,
 ):
+    """Run the FlyDSL Chunk-GDN megakernel.
+
+    When ssm_states is provided, the kernel also writes RTP SSM block cache
+    state directly. Without ssm_states it runs the same fused no-store path.
+    """
     if not _use_flydsl_chunk_gdn():
         raise RuntimeError(
             "chunk_gated_delta_rule_flydsl_with_cache_store requires USE_FLYDSL=1"
         )
     if head_first:
         raise DeprecationWarning(
-            "head_first is deprecated and is not supported by the FlyDSL cache-store path."
+            "head_first is deprecated and is not supported by the FlyDSL Chunk-GDN path."
         )
     if cu_seqlens is not None and q.shape[0] != 1:
         raise ValueError(
@@ -244,21 +249,27 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
                 f"rather than {initial_state.shape[0]}."
             )
     _validate_flydsl_chunk_gdn_inputs(q=q, k=k, v=v, beta=beta)
-    if ssm_states.dtype not in (torch.bfloat16, torch.float32):
-        raise ValueError(
-            f"unsupported ssm_states dtype for FlyDSL direct store: {ssm_states.dtype}"
-        )
     _, _, H, V = v.shape
     K = k.shape[-1]
-    if (
-        ssm_states.stride(1) != K * V
-        or ssm_states.stride(2) != K
-        or ssm_states.stride(3) != 1
-    ):
-        raise ValueError(
-            "FlyDSL direct store expects ssm_states layout [block, head, V, K] "
-            "with contiguous per-head state"
-        )
+    if ssm_states is not None:
+        if prefix_lengths is None or block_map is None or seq_size_per_block is None:
+            raise ValueError(
+                "prefix_lengths, block_map and seq_size_per_block are required "
+                "when FlyDSL writes ssm_states directly"
+            )
+        if ssm_states.dtype not in (torch.bfloat16, torch.float32):
+            raise ValueError(
+                f"unsupported ssm_states dtype for FlyDSL direct store: {ssm_states.dtype}"
+            )
+        if (
+            ssm_states.stride(1) != K * V
+            or ssm_states.stride(2) != K
+            or ssm_states.stride(3) != 1
+        ):
+            raise ValueError(
+                "FlyDSL direct store expects ssm_states layout [block, head, V, K] "
+                "with contiguous per-head state"
+            )
     if scale is None:
         scale = k.shape[-1] ** -0.5
 
@@ -269,13 +280,13 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
     beta = beta.contiguous()
     if initial_state is not None:
         initial_state = initial_state.contiguous()
-    if prefix_lengths.dtype != torch.int32:
+    if prefix_lengths is not None and prefix_lengths.dtype != torch.int32:
         prefix_lengths = prefix_lengths.to(torch.int32)
-    if block_map.dtype != torch.int32:
+    if block_map is not None and block_map.dtype != torch.int32:
         block_map = block_map.to(torch.int32)
-    if not prefix_lengths.is_contiguous():
+    if prefix_lengths is not None and not prefix_lengths.is_contiguous():
         prefix_lengths = prefix_lengths.contiguous()
-    if not block_map.is_contiguous():
+    if block_map is not None and not block_map.is_contiguous():
         block_map = block_map.contiguous()
 
     if use_qk_l2norm_in_kernel:
