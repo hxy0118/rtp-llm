@@ -279,7 +279,6 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
                 output_final_state=True,
                 cu_seqlens=cu_seqlens_without_padding,
                 use_qk_l2norm_in_kernel=True,
-                state_dtype=torch.float32 if ssm_states is not None else None,
             )
         else:
             attn_out, h, final_state = chunk_gated_delta_rule(
@@ -292,6 +291,7 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
                 output_final_state=True,
                 cu_seqlens=cu_seqlens_without_padding,
                 use_qk_l2norm_in_kernel=True,
+                state_dtype=torch.float32 if ssm_states is not None else None,
             )
         if ssm_states is not None and not use_flydsl_chunk_gdn:
             store_ssm_state_to_block_map(
@@ -711,7 +711,6 @@ class Qwen3NextGatedDeltaNet(nn.Module):
                 output_final_state=True,
                 cu_seqlens=full_cu,
                 use_qk_l2norm_in_kernel=True,
-                state_dtype=torch.float32 if ssm_states is not None else None,
             )
         else:
             attn_out, h, final_state = chunk_gated_delta_rule(
@@ -724,6 +723,7 @@ class Qwen3NextGatedDeltaNet(nn.Module):
                 output_final_state=True,
                 cu_seqlens=full_cu,
                 use_qk_l2norm_in_kernel=True,
+                state_dtype=torch.float32 if ssm_states is not None else None,
             )
 
         if ssm_states is not None and not use_flydsl_chunk_gdn:
