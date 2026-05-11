@@ -142,6 +142,7 @@ def chunk_gated_delta_rule_fwd(
     initial_state: Optional[torch.Tensor],
     output_final_state: bool,
     cu_seqlens: Optional[torch.LongTensor] = None,
+    state_dtype: Optional[torch.dtype] = None,
 ):
     # AMD: scale g to log2 domain (multiply cumsum by 1/ln2) so AMD-side
     # downstream kernels can use the single-instruction exp2.
@@ -193,6 +194,7 @@ def chunk_gated_delta_rule_fwd(
         initial_state=initial_state,
         output_final_state=output_final_state,
         cu_seqlens=cu_seqlens,
+        state_dtype=state_dtype,
     )
     o = chunk_fwd_o(
         q=q,
@@ -359,6 +361,7 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         output_final_state: bool,
         cu_seqlens: Optional[torch.LongTensor] = None,
         use_qk_l2norm_in_kernel: bool = False,
+        state_dtype: Optional[torch.dtype] = None,
     ):
         q_orig = q
         k_orig = k
@@ -382,6 +385,7 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
             initial_state=initial_state,
             output_final_state=output_final_state,
             cu_seqlens=cu_seqlens,
+            state_dtype=state_dtype,
         )
         return o.to(q.dtype), h, final_state
 
@@ -399,6 +403,7 @@ def chunk_gated_delta_rule(
     cu_seqlens: Optional[torch.LongTensor] = None,
     head_first: bool = False,
     use_qk_l2norm_in_kernel: bool = False,
+    state_dtype: Optional[torch.dtype] = None,
 ):
     r"""
     Args:
@@ -510,6 +515,7 @@ def chunk_gated_delta_rule(
         output_final_state,
         cu_seqlens,
         use_qk_l2norm_in_kernel,
+        state_dtype,
     )
     if head_first:
         o = rearrange(o, "b t h ... -> b h t ...")
