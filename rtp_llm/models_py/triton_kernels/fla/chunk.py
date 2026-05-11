@@ -163,49 +163,8 @@ def chunk_gated_delta_rule_fwd(
             beta=beta,
             cu_seqlens=cu_seqlens,
         )
-        if is_flydsl_chunk_gdn_shape_supported(q=q, k=k, v=v, beta=beta):
-            _validate_flydsl_chunk_gdn_inputs(q=q, k=k, v=v, beta=beta)
-            from rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi300x import (
-                megakernel_fwd,
-            )
-
-            flydsl_initial_state = (
-                initial_state.float()
-                if initial_state is not None and initial_state.dtype != torch.float32
-                else initial_state
-            )
-            flydsl_cu_seqlens = (
-                cu_seqlens.to(torch.long)
-                if cu_seqlens is not None and cu_seqlens.dtype != torch.long
-                else cu_seqlens
-            )
-            o, final_state = megakernel_fwd(
-                q=q,
-                k=k,
-                v=v,
-                a=A,
-                g=g,
-                beta=beta,
-                scale=scale,
-                initial_state=flydsl_initial_state,
-                output_final_state=output_final_state,
-                cu_seqlens=flydsl_cu_seqlens,
-            )
-            # The public chunk_gated_delta_rule API still returns per-chunk h.
-            # Qwen3Next prefill uses the dedicated FlyDSL cache-store helper
-            # below to skip this Triton h producer when h is only needed for
-            # RTP SSM block-state persistence.
-            h, v_new, _ = chunk_gated_delta_rule_fwd_h(
-                k=k,
-                w=w,
-                u=u,
-                g=g,
-                initial_state=initial_state,
-                output_final_state=False,
-                save_new_value=False,
-                cu_seqlens=cu_seqlens,
-            )
-            return g, o, A, final_state, w, h, v_new
+        # The public API must return per-chunk h/v_new. The production FlyDSL
+        # path is Qwen3Next's direct-store helper, which skips materialized h.
     else:
         g = chunk_local_cumsum(g, chunk_size=64, cu_seqlens=cu_seqlens)
         # Original pipeline: separate kkt -> solve_tril -> recompute_w_u
