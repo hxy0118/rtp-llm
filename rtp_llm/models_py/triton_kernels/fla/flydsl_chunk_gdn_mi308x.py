@@ -1180,9 +1180,9 @@ def _launch_fast_into(
     B, T_total, Hg, K = q.shape
     _, _, H, V = v.shape
     fast_module = (
-        "rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi300x_bdv32_fast"
+        "rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi308x_bdv32_fast"
         if _use_bdv32_fast_path(H, Hg, K, V)
-        else "rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi300x_fast"
+        else "rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi308x_fast"
     )
     fast = importlib.import_module(fast_module)
 

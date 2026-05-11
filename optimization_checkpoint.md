@@ -233,8 +233,8 @@ Shape-generalization implications:
 ### 实验 10: P0/P1 BDV32 small-H FlyDSL kernel optimization
 - 状态: 有效；这是 kernel-level FlyDSL 优化，不是 dispatch/fallback 策略。
 - 改动:
-  - 新增 `rtp_llm/models_py/triton_kernels/fla/flydsl_chunk_gdn_mi300x_bdv32_fast.py`;
-  - `flydsl_chunk_gdn_mi300x.py` 仅对 `(2,8,128,128)` 和
+  - 新增 `rtp_llm/models_py/triton_kernels/fla/flydsl_chunk_gdn_mi308x_bdv32_fast.py`;
+  - `flydsl_chunk_gdn_mi308x.py` 仅对 `(2,8,128,128)` 和
     `(8,16,128,128)` 的 aligned fast path 选择 BDV32 模块；
   - `(8,32,128,128)` 原 hot path 继续走 BDV64；
   - BDV32 使用独立 LDS symbol `megakernel_mi300x_v2_bdv32_smem`，避免与

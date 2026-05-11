@@ -48,9 +48,9 @@ direct `ssm_states` validation before being enabled.
 
 RTP files:
 
-- `rtp_llm/models_py/triton_kernels/fla/flydsl_chunk_gdn_mi300x.py`
-- `rtp_llm/models_py/triton_kernels/fla/flydsl_chunk_gdn_mi300x_fast.py`
-- `rtp_llm/models_py/triton_kernels/fla/flydsl_chunk_gdn_mi300x_bdv32_fast.py`
+- `rtp_llm/models_py/triton_kernels/fla/flydsl_chunk_gdn_mi308x.py`
+- `rtp_llm/models_py/triton_kernels/fla/flydsl_chunk_gdn_mi308x_fast.py`
+- `rtp_llm/models_py/triton_kernels/fla/flydsl_chunk_gdn_mi308x_bdv32_fast.py`
 
 The default/hot aligned path keeps `BLOCK_DV=64`, preserving the original
 `(8,32,128,128)` path. The new BDV32 fast module is selected only for:

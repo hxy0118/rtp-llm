@@ -309,7 +309,7 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
         cu_seqlens=cu_seqlens,
     )
 
-    from rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi300x import (
+    from rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi308x import (
         megakernel_fwd,
     )
 
