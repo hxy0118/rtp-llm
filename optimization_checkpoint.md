@@ -1,5 +1,8 @@
 # 实验 Checkpoint: RTP Chunk-GDN FlyDSL opt-in integration
 
+Shape 泛化优化的独立记录见 `shape_generalization_optimization.md`。该文件是
+`/tmp/kernel_opt_chunk_gdn_shape_generalization/memory.md` 的 repo 内镜像摘要。
+
 ## 环境
 - framework: rtp-llm, local repo `/root/RTP-LLM/github-opensource`
 - hardware: AMD MI308X/MI300X target for current FlyDSL megakernel; MI355 follow-up tracked separately
@@ -227,10 +230,70 @@ Shape-generalization implications:
 | `(2,8,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP8 | normal | 200000 | 34.830 | 33.148 | 37.353 | `0.932x` | `0.887x` |
 | `(2,8,128,128)` | Qwen3.5 122B-A10B/397B-A17B TP8 | prefix50 | 100032 | 17.377 | 16.573 | 18.712 | `0.929x` | `0.886x` |
 
+### 实验 10: P0/P1 BDV32 small-H FlyDSL kernel optimization
+- 状态: 有效；这是 kernel-level FlyDSL 优化，不是 dispatch/fallback 策略。
+- 改动:
+  - 新增 `rtp_llm/models_py/triton_kernels/fla/flydsl_chunk_gdn_mi300x_bdv32_fast.py`;
+  - `flydsl_chunk_gdn_mi300x.py` 仅对 `(2,8,128,128)` 和
+    `(8,16,128,128)` 的 aligned fast path 选择 BDV32 模块；
+  - `(8,32,128,128)` 原 hot path 继续走 BDV64；
+  - BDV32 使用独立 LDS symbol `megakernel_mi300x_v2_bdv32_smem`，避免与
+    BDV64 module 发生 LDS symbol collision。
+- profiling 证据:
+  - old BDV64 megakernel: LDS about `62976`, `VGPR=92`；200k workgroups:
+    `(2,8)=16`, `(8,16)=32`, `(8,32)=64`;
+  - BDV32 small-H: LDS about `54784`, `VGPR=56`，对 P0/P1 翻倍 V-axis
+    workgroups。
+- rocprofv3 结果:
+  - P0 `(2,8,128,128)` long sweep: 比 old FlyDSL 快 `1.239-1.260x`，现在比
+    current Triton 快 `1.094-1.119x`;
+  - P0 200k: old FlyDSL `37.413 ms` -> BDV32 FlyDSL `29.730 ms`;
+  - P1 `(8,16,128,128)` long sweep: 比 old FlyDSL 快 `1.237-1.250x`，现在比
+    current Triton 快 `1.355-1.385x`;
+  - P1 short spot checks: 512 `220.560us -> 197.201us`, 2048
+    `516.320us -> 428.640us`, 8192 `1742.204us -> 1400.903us`;
+  - hot `(8,32,128,128)` 200k: final `46.052 ms` vs old `46.061 ms`，无有意义退化。
+- 验证:
+  - py_compile passed for modified RTP and workspace files;
+  - workspace correctness passed for `(2,8)`, `(8,16)`, `(8,32)` at
+    `T=129/512/2048`;
+  - RTP direct cache-store correctness passed for `(2,8)`, `(8,16)`, `(8,32)`
+    at `T=129/512`。
+
+### 实验 11: gpu-wiki standalone 397B-TP2 FlyDSL vs Triton back-half
+- 状态: 有效；这是单算子后半段对比，不依赖 RTP runtime，也不使用 PyTorch
+  reference 作为性能 baseline。
+- 代码位置:
+  - FlyDSL: `/root/gpu-wiki/reference-kernels/amd/cdna3/flydsl/FlyDSL/`;
+  - Triton baseline: `/root/gpu-wiki/reference-kernels/amd/cdna/triton/chunk_gdn/`。
+- shape: Qwen3.5 122B/397B TP2 hot path，
+  `(B,Hg,H,K,V)=(1,8,32,128,128)`。
+- 对比边界: `a/g_cumsum` 已预计算；Triton runs
+  `recompute_w_u_fwd + chunk_gated_delta_rule_fwd_h + chunk_fwd_o`，FlyDSL runs
+  fused megakernel for the same back-half.
+- profiling: `/opt/rocm-7.2/bin/rocprofv3 --kernel-trace -f csv`，warmup 2，
+  target 5，记录最后 5 个 target iteration 的 P50。Triton 总耗时包含
+  `chunk_fwd_o` 内部的 `zeros_like` fill dispatch。
+- correctness spot-check: T=4096 FlyDSL vs Triton baseline
+  `o_cos=0.99998677`、`o_mean_abs=1.081581e-06`、`h_cos=0.99999225`、
+  `h_mean_abs=1.668401e-05`。
+
+| T | Triton back-half P50 | FlyDSL megakernel P50 | Speedup |
+|---:|---:|---:|---:|
+| 4096 | 1048.282us | 609.561us | 1.720x |
+| 16384 | 4113.662us | 2498.645us | 1.646x |
+| 65536 | 16403.075us | 9974.661us | 1.644x |
+| 200000 | 50805.507us | 30473.504us | 1.667x |
+
 ## 已放弃的方向
 - None
 
 ## 当前状态
 - 当前 Phase: Phase 5 validation/performance sweep
 - 当前 sub-skill: final-validation
-- 下一步: tiny suffix `input_len=1/17` 和 Qwen3.5 0.8B/2B shapes 暂不作为下一轮重点。P0 优化 Qwen3.5 122B-A10B/397B-A17B TP8 `(2,8,128,128)` long-context 负收益；P1 定位并优化 Qwen3.5 9B TP2 `(8,16,128,128)` 的长序列和非 tiny 短序列，短序列先看 `input_len=512`，再 spot-check `2048/8192`。另需单独调查 Triton baseline 在 `(16,48)/(16,64)` long normal `input_len=200000` 的 memory fault。
+- 当前状态: P0 `(2,8,128,128)` 和 P1 `(8,16,128,128)` 已通过 BDV32 small-H
+  FlyDSL fast module 修复主要性能问题；tiny suffix `input_len=1/17` 和
+  Qwen3.5 0.8B/2B shapes 仍不在本轮范围。gpu-wiki standalone 397B-TP2
+  back-half 已改用移植后的 Triton baseline 记录，P50 speedup 为
+  `1.644-1.720x`。另需单独调查 Triton baseline 在 `(16,48)/(16,64)`
+  long normal `input_len=200000` 的 memory fault。

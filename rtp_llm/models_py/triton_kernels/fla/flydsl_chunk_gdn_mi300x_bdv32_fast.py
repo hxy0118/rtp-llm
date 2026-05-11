@@ -2,7 +2,7 @@
 """FlyDSL megakernel V2a for MI300X/MI308X (CDNA3, gfx942).
 
 Starting from the MI308 V1 baseline:
-  - V43 keeps BLOCK_DV=64 for large T to halve DV-block duplication
+  - BDV32 small-H variant doubles V-axis grid parallelism for `(2,8)`/`(8,16)`
   - V45 trims the h/W/Vn LDS stride from 140 to 132 without changing counters
   - V46 delays producer K^T LDS stores until after the first loop barrier
   - V47 moves direct O stores after Phase-E barrier to overlap next prefetch
@@ -13,10 +13,8 @@ Starting from the MI308 V1 baseline:
   - 4 waves → 8 waves: waves 0-3 compute, waves 4-7 producer-load Q/K^T/A
 
 Architecture: 8 waves (512 threads), single-buffer LDS under the CDNA3 64KB limit.
-Target: MI300X (gfx942), DK=DV=128, BT=64, block_DV=64, LDS ≈ 62.8KB
+Target: MI300X (gfx942), DK=DV=128, BT=64, block_DV=32 small-H fast path
 """
-import importlib
-
 import flydsl.compiler as flyc
 import flydsl.expr as fx
 import torch
@@ -49,9 +47,8 @@ K_SIZE = 128
 V_SIZE = 128
 H_SIZE = 32
 Hg_SIZE = 8
-BLOCK_DV = 64  # V43: reduce DV-block duplication for large T
+BLOCK_DV = 32  # small-H path: double V-axis grid parallelism
 BLOCK_SIZE = 512  # V2a: 4 compute waves + 4 producer waves
-SPLIT_TAIL_MIN_PREFIX = 4096
 
 # LDS strides (element count per row, including padding)
 STRIDE_KT = 140  # [BT, K]: K+12; GEMM3 B reads K-contiguous vectors
@@ -97,7 +94,7 @@ def build_megakernel(
 
     gpu_arch = get_hip_arch()
     allocator = SmemAllocator(
-        None, arch=gpu_arch, global_sym_name="megakernel_mi300x_v2_smem"
+        None, arch=gpu_arch, global_sym_name="megakernel_mi300x_v2_bdv32_smem"
     )
 
     # No lds_k_row — K for GEMM1 loaded from GMEM directly
@@ -145,7 +142,6 @@ def build_megakernel(
         T_val: fx.Int32,
     ):
         v4f32 = T.vec(4, T.f32)
-        v8bf16 = T.vec(8, T.bf16)
         v4bf16 = T.vec(4, T.bf16)
         v1bf16 = T.vec(1, T.bf16)
         v1f32 = T.vec(1, T.f32)
@@ -272,61 +268,6 @@ def build_megakernel(
 
         zero_f32 = arith.constant(0.0, type=T.f32)
         zero_v4 = v4m([zero_f32] * 4)
-        zero_bf16 = bf16_trunc(zero_f32)
-        zero_v8bf16 = vector.from_elements(v8bf16, [zero_bf16] * 8)
-        zero_v4bf16 = vector.from_elements(v4bf16, [zero_bf16] * 4)
-
-        end_abs = bos + T_actual
-        last_abs = end_abs - arith.constant(1, type=T.i32)
-        g_pad_off = last_abs * stride_g + i_h
-        g_pad_val = buffer_ops.buffer_load(rsrc_g, g_pad_off, vec_width=1, dtype=T.f32)
-
-        def row_in_sequence(chunk_base_val, row):
-            return arith.cmpi(arith.CmpIPredicate.slt, chunk_base_val + row, end_abs)
-
-        def buffer_load_bf16_v8_or_zero(rsrc, off, valid):
-            load_if = scf.IfOp(valid, results_=[v8bf16], has_else=True)
-            with ir.InsertionPoint(load_if.then_block):
-                real = buffer_ops.buffer_load(rsrc, off, vec_width=8, dtype=T.bf16)
-                scf.YieldOp([real])
-            with ir.InsertionPoint(load_if.else_block):
-                scf.YieldOp([zero_v8bf16])
-            return load_if.results[0]
-
-        def buffer_load_bf16_v4_or_zero(rsrc, off, valid):
-            load_if = scf.IfOp(valid, results_=[v4bf16], has_else=True)
-            with ir.InsertionPoint(load_if.then_block):
-                real = buffer_ops.buffer_load(rsrc, off, vec_width=4, dtype=T.bf16)
-                scf.YieldOp([real])
-            with ir.InsertionPoint(load_if.else_block):
-                scf.YieldOp([zero_v4bf16])
-            return load_if.results[0]
-
-        def buffer_load_bf16_or_zero(rsrc, off, valid):
-            load_if = scf.IfOp(valid, results_=[T.bf16], has_else=True)
-            with ir.InsertionPoint(load_if.then_block):
-                real = buffer_ops.buffer_load(rsrc, off, vec_width=1, dtype=T.bf16)
-                scf.YieldOp([real])
-            with ir.InsertionPoint(load_if.else_block):
-                scf.YieldOp([zero_bf16])
-            return load_if.results[0]
-
-        def buffer_load_f32_or_value(rsrc, off, valid, fallback):
-            load_if = scf.IfOp(valid, results_=[T.f32], has_else=True)
-            with ir.InsertionPoint(load_if.then_block):
-                real = buffer_ops.buffer_load(rsrc, off, vec_width=1, dtype=T.f32)
-                scf.YieldOp([real])
-            with ir.InsertionPoint(load_if.else_block):
-                scf.YieldOp([fallback])
-            return load_if.results[0]
-
-        def buffer_store_bf16_if_valid(data, rsrc, off, valid):
-            store_if = scf.IfOp(valid, [], has_else=True)
-            with ir.InsertionPoint(store_if.then_block):
-                buffer_ops.buffer_store(data, rsrc, off)
-                scf.YieldOp([])
-            with ir.InsertionPoint(store_if.else_block):
-                scf.YieldOp([])
 
         def store_h_to_ssm_block(h_vals, dest_block_pos):
             zero_i32 = arith.constant(0, type=T.i32)
@@ -444,20 +385,24 @@ def build_megakernel(
             if PRODUCER_STAGE_Q:
                 for ei in range_constexpr(2):
                     q_row = p_row0 + 32 * ei
-                    q_valid = row_in_sequence(chunk_base_val, q_row)
                     q_off = (chunk_base_val + q_row) * stride_q + k_head * K + p_col0
-                    q_vec = buffer_load_bf16_v8_or_zero(rsrc_q, q_off, q_valid)
+                    q_vec = buffer_ops.buffer_load(
+                        rsrc_q, q_off, vec_width=8, dtype=T.bf16
+                    )
                     vector.store(q_vec, lds_q, [to_idx(q_row * STRIDE_Q + p_col0)])
-                    q_vec2 = buffer_load_bf16_v8_or_zero(rsrc_q, q_off + 8, q_valid)
+                    q_vec2 = buffer_ops.buffer_load(
+                        rsrc_q, q_off + 8, vec_width=8, dtype=T.bf16
+                    )
                     vector.store(q_vec2, lds_q, [to_idx(q_row * STRIDE_Q + p_col0 + 8)])
 
             # A[BT, BT] → lds_a
             if PRODUCER_STAGE_A:
                 for ei in range_constexpr(2):
                     a_row = p_row0 + 32 * ei
-                    a_valid = row_in_sequence(chunk_base_val, a_row)
                     a_off = (chunk_base_val + a_row) * stride_a + i_h * BT + p_a_col0
-                    a_vec = buffer_load_bf16_v8_or_zero(rsrc_a, a_off, a_valid)
+                    a_vec = buffer_ops.buffer_load(
+                        rsrc_a, a_off, vec_width=8, dtype=T.bf16
+                    )
                     vector.store(a_vec, lds_a, [to_idx(a_row * STRIDE_A + p_a_col0)])
 
             # FlashQLA keeps gamma/beta in shared memory so consumer groups do
@@ -469,9 +414,8 @@ def build_megakernel(
             gb_if = scf.IfOp(gb_active, [], has_else=True)
             with ir.InsertionPoint(gb_if.then_block):
                 gb_idx = prod_wave * 16 + lane
-                gb_valid = row_in_sequence(chunk_base_val, gb_idx)
                 g_off = (chunk_base_val + gb_idx) * stride_g + i_h
-                g_val = buffer_load_f32_or_value(rsrc_g, g_off, gb_valid, g_pad_val)
+                g_val = buffer_ops.buffer_load(rsrc_g, g_off, vec_width=1, dtype=T.f32)
                 vector.store(
                     vector.from_elements(v1f32, [g_val]),
                     lds_g,
@@ -480,7 +424,9 @@ def build_megakernel(
                 )
 
                 beta_off = (chunk_base_val + gb_idx) * stride_g + i_h
-                beta_val = buffer_load_bf16_or_zero(rsrc_beta, beta_off, gb_valid)
+                beta_val = buffer_ops.buffer_load(
+                    rsrc_beta, beta_off, vec_width=1, dtype=T.bf16
+                )
                 vector.store(
                     vector.from_elements(v1bf16, [beta_val]), lds_beta, [to_idx(gb_idx)]
                 )
@@ -493,10 +439,13 @@ def build_megakernel(
             if PRODUCER_STAGE_KT:
                 for ei in range_constexpr(2):
                     k_row = p_row0 + 32 * ei
-                    k_valid = row_in_sequence(chunk_base_val, k_row)
                     k_off = (chunk_base_val + k_row) * stride_k + k_head * K + p_col0
-                    k_vec = buffer_load_bf16_v8_or_zero(rsrc_k, k_off, k_valid)
-                    k_vec2 = buffer_load_bf16_v8_or_zero(rsrc_k, k_off + 8, k_valid)
+                    k_vec = buffer_ops.buffer_load(
+                        rsrc_k, k_off, vec_width=8, dtype=T.bf16
+                    )
+                    k_vec2 = buffer_ops.buffer_load(
+                        rsrc_k, k_off + 8, vec_width=8, dtype=T.bf16
+                    )
                     vector.store(k_vec, lds_kT, [to_idx(k_row * STRIDE_KT + p_col0)])
                     vector.store(
                         k_vec2, lds_kT, [to_idx(k_row * STRIDE_KT + p_col0 + 8)]
@@ -511,11 +460,12 @@ def build_megakernel(
             if PRODUCER_STAGE_KT:
                 for ei in range_constexpr(2):
                     k_row = p_row0 + 32 * ei
-                    k_valid = row_in_sequence(chunk_base_val, k_row)
                     k_off = (chunk_base_val + k_row) * stride_k + k_head * K + p_col0
-                    kt_vecs[ei] = buffer_load_bf16_v8_or_zero(rsrc_k, k_off, k_valid)
-                    kt_vecs2[ei] = buffer_load_bf16_v8_or_zero(
-                        rsrc_k, k_off + 8, k_valid
+                    kt_vecs[ei] = buffer_ops.buffer_load(
+                        rsrc_k, k_off, vec_width=8, dtype=T.bf16
+                    )
+                    kt_vecs2[ei] = buffer_ops.buffer_load(
+                        rsrc_k, k_off + 8, vec_width=8, dtype=T.bf16
                     )
             return kt_vecs, kt_vecs2
 
@@ -546,20 +496,26 @@ def build_megakernel(
             if COMPUTE_STAGE_Q:
                 for ei in range_constexpr(2):
                     q_row = q_row0 + 32 * ei
-                    q_valid = row_in_sequence(chunk_base_val, q_row)
                     q_off = (chunk_base_val + q_row) * stride_q + k_head * K + q_col0
-                    q_vec = buffer_load_bf16_v8_or_zero(rsrc_q, q_off, q_valid)
+                    q_vec = buffer_ops.buffer_load(
+                        rsrc_q, q_off, vec_width=8, dtype=T.bf16
+                    )
                     vector.store(q_vec, lds_q, [to_idx(q_row * STRIDE_Q + q_col0)])
-                    q_vec2 = buffer_load_bf16_v8_or_zero(rsrc_q, q_off + 8, q_valid)
+                    q_vec2 = buffer_ops.buffer_load(
+                        rsrc_q, q_off + 8, vec_width=8, dtype=T.bf16
+                    )
                     vector.store(q_vec2, lds_q, [to_idx(q_row * STRIDE_Q + q_col0 + 8)])
 
             if COMPUTE_STAGE_KT:
                 for ei in range_constexpr(2):
                     k_row = q_row0 + 32 * ei
-                    k_valid = row_in_sequence(chunk_base_val, k_row)
                     k_off = (chunk_base_val + k_row) * stride_k + k_head * K + q_col0
-                    k_vec = buffer_load_bf16_v8_or_zero(rsrc_k, k_off, k_valid)
-                    k_vec2 = buffer_load_bf16_v8_or_zero(rsrc_k, k_off + 8, k_valid)
+                    k_vec = buffer_ops.buffer_load(
+                        rsrc_k, k_off, vec_width=8, dtype=T.bf16
+                    )
+                    k_vec2 = buffer_ops.buffer_load(
+                        rsrc_k, k_off + 8, vec_width=8, dtype=T.bf16
+                    )
                     vector.store(k_vec, lds_kT, [to_idx(k_row * STRIDE_KT + q_col0)])
                     vector.store(
                         k_vec2, lds_kT, [to_idx(k_row * STRIDE_KT + q_col0 + 8)]
@@ -570,9 +526,10 @@ def build_megakernel(
             if COMPUTE_STAGE_A:
                 for ei in range_constexpr(2):
                     a_row = a_row0 + 32 * ei
-                    a_valid = row_in_sequence(chunk_base_val, a_row)
                     a_off = (chunk_base_val + a_row) * stride_a + i_h * BT + a_col0
-                    a_vec = buffer_load_bf16_v8_or_zero(rsrc_a, a_off, a_valid)
+                    a_vec = buffer_ops.buffer_load(
+                        rsrc_a, a_off, vec_width=8, dtype=T.bf16
+                    )
                     vector.store(a_vec, lds_a, [to_idx(a_row * STRIDE_A + a_col0)])
 
         def producer_barrier_anchor():
@@ -637,11 +594,10 @@ def build_megakernel(
                 for nt in range_constexpr(NT_BDV):
                     for ii in range_constexpr(4):
                         v_row = wave_id * 16 + (lane // 16) * 4 + ii
-                        v_valid = row_in_sequence(chunk_base, v_row)
                         v_col = i_v * BLOCK_DV + nt * 16 + lane % 16
                         v_off = (chunk_base + v_row) * stride_v + i_h * V + v_col
-                        v_preloads[nt][ii] = buffer_load_bf16_or_zero(
-                            rsrc_v, v_off, v_valid
+                        v_preloads[nt][ii] = buffer_ops.buffer_load(
+                            rsrc_v, v_off, vec_width=1, dtype=T.bf16
                         )
 
                 last_idx_candidate = arith.ArithValue(
@@ -700,12 +656,13 @@ def build_megakernel(
                         b_h[nt] = load_b_k16_vec(lds_h, STRIDE_H, k_base, n_col)
 
                     k_row_idx = wave_id * 16 + lane % 16
-                    k_row_valid = row_in_sequence(chunk_base, k_row_idx)
                     k_col_idx = kt * 16 + (lane // 16) * 4
                     k_gmem_off = (
                         (chunk_base + k_row_idx) * stride_k + k_head * K + k_col_idx
                     )
-                    a_K = buffer_load_bf16_v4_or_zero(rsrc_k, k_gmem_off, k_row_valid)
+                    a_K = buffer_ops.buffer_load(
+                        rsrc_k, k_gmem_off, vec_width=4, dtype=T.bf16
+                    )
 
                     a_q_off = (
                         (wave_id * 16 + lane % 16) * STRIDE_Q
@@ -900,11 +857,10 @@ def build_megakernel(
                 for nt in range_constexpr(NT_BDV):
                     for ii in range_constexpr(4):
                         o_row = wave_id * 16 + (lane // 16) * 4 + ii
-                        o_valid = row_in_sequence(chunk_base, o_row)
                         o_col = i_v * BLOCK_DV + nt * 16 + lane % 16
                         o_off = (chunk_base + o_row) * stride_o + i_h * V + o_col
                         o_bf16 = bf16_trunc(v4e(O_acc[nt], ii))
-                        buffer_store_bf16_if_valid(o_bf16, rsrc_o, o_off, o_valid)
+                        buffer_ops.buffer_store(o_bf16, rsrc_o, o_off)
 
                 # ════════════════════════════════════════
                 # PHASE F: h *= exp2(g_last); GEMM6 h += K^T @ V'
@@ -1049,11 +1005,7 @@ def build_megakernel(
 _megakernel_cache = {}
 
 
-def _use_bdv32_fast_path(H, Hg, K, V):
-    return (Hg, H, K, V) in ((2, 8, 128, 128), (8, 16, 128, 128))
-
-
-def _launch_tail_safe_into(
+def megakernel_fwd(
     q,
     k,
     v,
@@ -1061,130 +1013,42 @@ def _launch_tail_safe_into(
     g,
     beta,
     scale,
-    initial_state,
-    output_final_state,
-    cu_seqlens,
-    chunk_offsets,
-    o,
+    initial_state=None,
+    output_final_state=False,
+    cu_seqlens=None,
+    chunk_offsets=None,
     prefix_lengths=None,
     block_map=None,
     ssm_states=None,
     seq_size_per_block=None,
-    token_offset=0,
-    total_t_for_store=0,
 ):
+    """Fused recompute_wu + fwd_h + fwd_o megakernel (MI300X V1).
+
+    Args:
+        q: [B, T, Hg, K] bf16
+        k: [B, T, Hg, K] bf16
+        v: [B, T, H, V] bf16
+        a: [B, T, H, BT] bf16 -- A_inv from kkt_solve
+        g: [B, T, H] fp32 -- cumsum output (log2 domain)
+        beta: [B, T, H] bf16
+        scale: float
+        initial_state: [B, H, K, V] fp32 or None
+        output_final_state: bool
+        cu_seqlens: [N+1] int64 or None
+        chunk_offsets: [N+1] int64 or None
+
+    Returns:
+        o: [B, T, H, V] bf16
+        final_state: [N, H, K, V] fp32 or None
+    """
     B, T_total, Hg, K = q.shape
     _, _, H, V = v.shape
-
-    use_h0 = initial_state is not None
-    use_vl = cu_seqlens is not None
-    store_ssm_state = ssm_states is not None
-
-    if cu_seqlens is not None:
-        N = len(cu_seqlens) - 1
-        lens = cu_seqlens[1:] - cu_seqlens[:-1]
-        if chunk_offsets is None:
-            chunk_offsets = torch.cat(
-                [cu_seqlens.new_tensor([0]), triton.cdiv(lens, BT)]
-            ).cumsum(-1)
-    else:
-        N = B
-    cache_key = (
-        H,
-        Hg,
-        K,
-        V,
-        use_h0,
-        use_vl,
-        store_ssm_state,
-        ssm_states.dtype if store_ssm_state else None,
-    )
-    if cache_key not in _megakernel_cache:
-        _megakernel_cache[cache_key] = build_megakernel(
-            is_varlen=use_vl,
-            use_initial_state=use_h0,
-            store_ssm_state=store_ssm_state,
-            ssm_state_dtype=ssm_states.dtype if store_ssm_state else None,
-            h_size=H,
-            hg_size=Hg,
-        )
-    fn = _megakernel_cache[cache_key]
-
-    ht = (
-        torch.empty(N, H, K, V, device=q.device, dtype=torch.float32)
-        if output_final_state
-        else None
-    )
-
-    dummy = torch.empty(0, device=q.device, dtype=torch.float32)
-    dummy_i32 = torch.empty(0, device=q.device, dtype=torch.int32)
-    h0_arg = initial_state if initial_state is not None else dummy
-    ht_arg = ht if ht is not None else dummy
-    cu_arg = cu_seqlens if cu_seqlens is not None else dummy.to(torch.int64)
-    co_arg = chunk_offsets if chunk_offsets is not None else dummy.to(torch.int64)
-    prefix_arg = prefix_lengths if prefix_lengths is not None else dummy_i32
-    block_map_arg = block_map if block_map is not None else dummy_i32
-    ssm_arg = ssm_states if ssm_states is not None else dummy
-    max_block_size = block_map.shape[1] if block_map is not None else 0
-    ssm_state_stride = ssm_states.stride(0) if ssm_states is not None else 0
-    seq_block = seq_size_per_block if seq_size_per_block is not None else 1
-
-    fn(
-        q,
-        k,
-        v,
-        a,
-        g,
-        beta,
-        o,
-        h0_arg,
-        ht_arg,
-        cu_arg,
-        co_arg,
-        prefix_arg,
-        block_map_arg,
-        ssm_arg,
-        max_block_size,
-        seq_block,
-        ssm_state_stride,
-        token_offset,
-        total_t_for_store,
-        scale,
-        T_total,
-        N,
-    )
-
-    return ht
-
-
-def _launch_fast_into(
-    q,
-    k,
-    v,
-    a,
-    g,
-    beta,
-    scale,
-    initial_state,
-    output_final_state,
-    cu_seqlens,
-    chunk_offsets,
-    o,
-    prefix_lengths=None,
-    block_map=None,
-    ssm_states=None,
-    seq_size_per_block=None,
-    token_offset=0,
-    total_t_for_store=0,
-):
-    B, T_total, Hg, K = q.shape
-    _, _, H, V = v.shape
-    fast_module = (
-        "rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi300x_bdv32_fast"
-        if _use_bdv32_fast_path(H, Hg, K, V)
-        else "rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi300x_fast"
-    )
-    fast = importlib.import_module(fast_module)
+    if ssm_states is not None:
+        if prefix_lengths is None or block_map is None or seq_size_per_block is None:
+            raise ValueError(
+                "prefix_lengths, block_map and seq_size_per_block are required "
+                "when FlyDSL writes ssm_states directly"
+            )
 
     use_h0 = initial_state is not None
     use_vl = cu_seqlens is not None
@@ -1210,8 +1074,8 @@ def _launch_fast_into(
         store_ssm_state,
         ssm_states.dtype if store_ssm_state else None,
     )
-    if cache_key not in fast._megakernel_cache:
-        fast._megakernel_cache[cache_key] = fast.build_megakernel(
+    if cache_key not in _megakernel_cache:
+        _megakernel_cache[cache_key] = build_megakernel(
             is_varlen=use_vl,
             use_initial_state=use_h0,
             store_ssm_state=store_ssm_state,
@@ -1219,8 +1083,9 @@ def _launch_fast_into(
             h_size=H,
             hg_size=Hg,
         )
-    fn = fast._megakernel_cache[cache_key]
+    fn = _megakernel_cache[cache_key]
 
+    o = torch.empty(B, T_total, H, V, device=q.device, dtype=q.dtype)
     ht = (
         torch.empty(N, H, K, V, device=q.device, dtype=torch.float32)
         if output_final_state
@@ -1239,6 +1104,7 @@ def _launch_fast_into(
     max_block_size = block_map.shape[1] if block_map is not None else 0
     ssm_state_stride = ssm_states.stride(0) if ssm_states is not None else 0
     seq_block = seq_size_per_block if seq_size_per_block is not None else 1
+    total_t_for_store = T_total if cu_seqlens is None else 0
 
     fn(
         q,
@@ -1258,275 +1124,11 @@ def _launch_fast_into(
         max_block_size,
         seq_block,
         ssm_state_stride,
-        token_offset,
+        0,
         total_t_for_store,
         scale,
         T_total,
         N,
     )
 
-    return ht
-
-
-def _tail_split_single_sequence(
-    q,
-    k,
-    v,
-    a,
-    g,
-    beta,
-    scale,
-    initial_state,
-    output_final_state,
-    prefix_len,
-    prefix_lengths=None,
-    block_map=None,
-    ssm_states=None,
-    seq_size_per_block=None,
-):
-    B, T_total, _, K = q.shape
-    _, _, H, V = v.shape
-    o = torch.empty(B, T_total, H, V, device=q.device, dtype=q.dtype)
-
-    h_prefix = _launch_fast_into(
-        q[:, :prefix_len],
-        k[:, :prefix_len],
-        v[:, :prefix_len],
-        a[:, :prefix_len],
-        g[:, :prefix_len],
-        beta[:, :prefix_len],
-        scale,
-        initial_state,
-        True,
-        None,
-        None,
-        o[:, :prefix_len],
-        prefix_lengths=prefix_lengths,
-        block_map=block_map,
-        ssm_states=ssm_states,
-        seq_size_per_block=seq_size_per_block,
-        token_offset=0,
-        total_t_for_store=T_total,
-    )
-
-    ht = _launch_tail_safe_into(
-        q[:, prefix_len:],
-        k[:, prefix_len:],
-        v[:, prefix_len:],
-        a[:, prefix_len:],
-        g[:, prefix_len:],
-        beta[:, prefix_len:],
-        scale,
-        h_prefix,
-        output_final_state,
-        None,
-        None,
-        o[:, prefix_len:],
-        prefix_lengths=prefix_lengths,
-        block_map=block_map,
-        ssm_states=ssm_states,
-        seq_size_per_block=seq_size_per_block,
-        token_offset=prefix_len,
-        total_t_for_store=T_total,
-    )
-    return o, ht
-
-
-def megakernel_fwd(
-    q,
-    k,
-    v,
-    a,
-    g,
-    beta,
-    scale,
-    initial_state=None,
-    output_final_state=False,
-    cu_seqlens=None,
-    chunk_offsets=None,
-    prefix_lengths=None,
-    block_map=None,
-    ssm_states=None,
-    seq_size_per_block=None,
-):
-    """Fused recompute_wu + fwd_h + fwd_o megakernel (MI300X V1)."""
-    B, T_total, _, K = q.shape
-    _, _, H, V = v.shape
-    if ssm_states is not None:
-        if prefix_lengths is None or block_map is None or seq_size_per_block is None:
-            raise ValueError(
-                "prefix_lengths, block_map and seq_size_per_block are required "
-                "when FlyDSL writes ssm_states directly"
-            )
-
-    if cu_seqlens is None:
-        if T_total % BT == 0:
-            o = torch.empty(B, T_total, H, V, device=q.device, dtype=q.dtype)
-            ht = _launch_fast_into(
-                q,
-                k,
-                v,
-                a,
-                g,
-                beta,
-                scale,
-                initial_state,
-                output_final_state,
-                None,
-                None,
-                o,
-                prefix_lengths=prefix_lengths,
-                block_map=block_map,
-                ssm_states=ssm_states,
-                seq_size_per_block=seq_size_per_block,
-                total_t_for_store=T_total,
-            )
-            return o, ht
-
-        prefix_len = (T_total // BT) * BT
-        if B == 1 and prefix_len >= SPLIT_TAIL_MIN_PREFIX:
-            return _tail_split_single_sequence(
-                q,
-                k,
-                v,
-                a,
-                g,
-                beta,
-                scale,
-                initial_state,
-                output_final_state,
-                prefix_len,
-                prefix_lengths=prefix_lengths,
-                block_map=block_map,
-                ssm_states=ssm_states,
-                seq_size_per_block=seq_size_per_block,
-            )
-
-        o = torch.empty(B, T_total, H, V, device=q.device, dtype=q.dtype)
-        ht = _launch_tail_safe_into(
-            q,
-            k,
-            v,
-            a,
-            g,
-            beta,
-            scale,
-            initial_state,
-            output_final_state,
-            None,
-            None,
-            o,
-            prefix_lengths=prefix_lengths,
-            block_map=block_map,
-            ssm_states=ssm_states,
-            seq_size_per_block=seq_size_per_block,
-            total_t_for_store=T_total,
-        )
-        return o, ht
-
-    if len(cu_seqlens) == 2:
-        prefix_len = (T_total // BT) * BT
-        if T_total % BT == 0:
-            o = torch.empty(B, T_total, H, V, device=q.device, dtype=q.dtype)
-            ht = _launch_fast_into(
-                q,
-                k,
-                v,
-                a,
-                g,
-                beta,
-                scale,
-                initial_state,
-                output_final_state,
-                cu_seqlens,
-                chunk_offsets,
-                o,
-                prefix_lengths=prefix_lengths,
-                block_map=block_map,
-                ssm_states=ssm_states,
-                seq_size_per_block=seq_size_per_block,
-            )
-            return o, ht
-
-        if B == 1 and prefix_len >= SPLIT_TAIL_MIN_PREFIX:
-            return _tail_split_single_sequence(
-                q,
-                k,
-                v,
-                a,
-                g,
-                beta,
-                scale,
-                initial_state,
-                output_final_state,
-                prefix_len,
-                prefix_lengths=prefix_lengths,
-                block_map=block_map,
-                ssm_states=ssm_states,
-                seq_size_per_block=seq_size_per_block,
-            )
-
-        o = torch.empty(B, T_total, H, V, device=q.device, dtype=q.dtype)
-        ht = _launch_tail_safe_into(
-            q,
-            k,
-            v,
-            a,
-            g,
-            beta,
-            scale,
-            initial_state,
-            output_final_state,
-            cu_seqlens,
-            chunk_offsets,
-            o,
-            prefix_lengths=prefix_lengths,
-            block_map=block_map,
-            ssm_states=ssm_states,
-            seq_size_per_block=seq_size_per_block,
-        )
-        return o, ht
-
-    lens = cu_seqlens[1:] - cu_seqlens[:-1]
-    if bool(torch.all((lens % BT) == 0).item()):
-        o = torch.empty(B, T_total, H, V, device=q.device, dtype=q.dtype)
-        ht = _launch_fast_into(
-            q,
-            k,
-            v,
-            a,
-            g,
-            beta,
-            scale,
-            initial_state,
-            output_final_state,
-            cu_seqlens,
-            chunk_offsets,
-            o,
-            prefix_lengths=prefix_lengths,
-            block_map=block_map,
-            ssm_states=ssm_states,
-            seq_size_per_block=seq_size_per_block,
-        )
-        return o, ht
-
-    o = torch.empty(B, T_total, H, V, device=q.device, dtype=q.dtype)
-    ht = _launch_tail_safe_into(
-        q,
-        k,
-        v,
-        a,
-        g,
-        beta,
-        scale,
-        initial_state,
-        output_final_state,
-        cu_seqlens,
-        chunk_offsets,
-        o,
-        prefix_lengths=prefix_lengths,
-        block_map=block_map,
-        ssm_states=ssm_states,
-        seq_size_per_block=seq_size_per_block,
-    )
     return o, ht
