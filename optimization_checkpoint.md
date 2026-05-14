@@ -288,12 +288,137 @@ Shape-generalization implications:
 ## 已放弃的方向
 - None
 
+---
+
+## 调试记录: USE_FLYDSL=1 服务端 coredump (2026-05-14)
+
+### 问题描述
+commit e2ea26ea7 集成 flydsl chunk-gdn 后，`USE_FLYDSL=1` 拉起 Qwen3.5-9B 服务正常，但发送长请求 (>64 tokens) 后 GPU 侧 assert 失败导致 coredump。
+
+### 服务启动命令
+```bash
+# Baseline（不含 USE_FLYDSL=1）
+cd /root/RTP-LLM/github-opensource && REUSE_CACHE=1 SEQ_SIZE_PER_BLOCK=1024 KERNEL_SEQ_SIZE_PER_BLOCK=16 WARM_UP=0 CONCURRENCY_LIMIT=128 ENABLE_CUDA_GRAPH=1 LOAD_PYTHON_MODEL=1 USE_ASM_PA=0 WORLD_SIZE=1 DP_SIZE=1 TP_SIZE=1 EP_SIZE=1 DEVICE_RESERVE_MEMORY_BYTES=-21474836000 RESERVER_RUNTIME_MEM_MB=4096 AITER_ASM_DIR=/opt/conda310/lib/python3.10/site-packages/aiter_meta/hsa/ MAX_SEQ_LEN=262144 START_PORT=8066 ACT_TYPE=bf16 TOKENIZER_PATH=~/Qwen3.5-9B CHECKPOINT_PATH=~/Qwen3.5-9B MODEL_TYPE=qwen35_dense FT_SERVER_TEST=1 ROCM_DISABLE_CUSTOM_AG=True FT_DISABLE_CUSTOM_AR=True KV_CACHE_MEM_MB=32000 /opt/conda310/bin/python3.10 -m rtp_llm.start_server 2>&1 | tee output.txt
+
+# 测试配置：在 baseline 基础上仅加 USE_FLYDSL=1
+```
+
+### 测试请求
+```bash
+# 短请求 (11 tokens)
+curl -s http://localhost:8066/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"Qwen3.5-9B","messages":[{"role":"user","content":"hello"}],"max_tokens":10}'
+
+# 长请求 (~560 tokens) — 触发 crash
+python3 -c "
+import requests
+msg = 'Tell me about the history of computing in great detail. ' * 50
+resp = requests.post('http://localhost:8066/v1/chat/completions', json={'model':'Qwen3.5-9B','messages':[{'role':'user','content':msg}],'max_tokens':100}, timeout=120)
+print(resp.status_code, resp.text[:500])
+"
+```
+
+### Baseline 验证
+| 场景 | 状态 | 备注 |
+|------|------|------|
+| 不带 USE_FLYDSL=1 + 短请求 | **未测试** | 需要补充 |
+| 不带 USE_FLYDSL=1 + 长请求 | **未测试** | 需要补充 |
+| USE_FLYDSL=1 + 短请求 (11 tokens) | 正常 | 返回正确输出 |
+| USE_FLYDSL=1 + 长请求 (560 tokens) | **crash** | HSA_STATUS_ERROR_EXCEPTION 0x1016 |
+
+### 调试实验 D1: 复现 crash
+- 状态: 有效（crash 稳定复现）
+- 改动: 无代码改动
+- 结果: crash kernel = `_ZN2at6native25_assert_async_cuda_kernelIbEEvPKT_NS0_3MsgE` (PyTorch GPU assert)
+- 结论: crash 来自 PyTorch GPU 端断言失败，不是 flydsl kernel 本身的 SIGSEGV
+
+### 调试实验 D2: torch.cuda.synchronize() 定位 crash 阶段
+- 状态: 有效
+- 改动: qwen3_next.py 的 flydsl 调用前后加 `torch.cuda.synchronize()`
+- 结果: 所有 24 个 GDN 层的 flydsl 调用都 pre-call + post-call sync OK
+- 结论: **crash 不在 flydsl megakernel 执行期间**，发生在 prefill 所有层完成之后
+
+### 调试实验 D3: NaN 检测
+- 状态: 有效（找到直接原因）
+- 改动: flydsl 调用后检查 `torch.isnan(attn_out).sum()`
+- 结果:
+  - GDN 层 0: 30653 NaN + 4291 Inf / 2293760 元素 (~1.5%)
+  - GDN 层 1-23: 100% NaN（NaN 传播）
+- 结论: **flydsl 输出含 NaN/Inf** → 传播至 logits → sampler GPU assert 触发 crash
+
+### 调试实验 D4: standalone 对比 flydsl vs reference
+- 状态: 有效（排除 megakernel 整体数学错误）
+- 改动: Python 脚本直接调用两条路径，随机数据 + L2norm + cu_seqlens
+- 结果: 两条路径输出一致，T=11..560 均无 NaN，max_diff < 0.001
+- 结论: megakernel 在随机数据上数学正确；NaN 只在真实模型权重下出现
+
+### 调试实验 D5: Baseline 验证（不带 USE_FLYDSL=1）
+- 状态: 有效（baseline 正常）
+- 改动: 无代码改动，使用完全相同的启动命令但不加 USE_FLYDSL=1
+- 结果:
+  - 短请求 (11 tokens): HTTP 200，输出正常 "Thinking Process:\n\n1.  **Analyze"
+  - 长请求 (~560 tokens): HTTP 200，输出正常，完成 100 tokens 生成
+- 结论: **baseline（非 flydsl 路径）在同样长请求下完全正常**，确认问题仅由 USE_FLYDSL=1 引入
+
+### 调试实验 D6: 输入 NaN 排查
+- 状态: 有效（确认输入干净，问题在 megakernel）
+- 改动: debug code 检查 flydsl 前后的 NaN/Inf
+- 结果:
+  - Call#1 (GDN layer 0): **输入全部干净**，输出 30653 NaN + 4291 Inf
+  - Call#2-24: 输入已全是 NaN（从 Call#1 传播），h0 仍为 0
+- 结论: 输入干净 → 问题在 megakernel 内部
+
+### 调试实验 D7: 离线 flydsl vs Triton 对比
+- 状态: 有效（确认 NaN 只在 flydsl 路径，与 cache store 无关）
+- 改动: 保存 Call#1 的完整输入到 /tmp/flydsl_call1_inputs.pt，离线对比
+- 结果:
+  - Triton 输出: nan=0, inf=0, range=[-0.022, 2.25] — 完全正常
+  - FlyDSL 输出（即使不带 cache store）: nan=30653, inf=4291
+  - 首个 NaN/Inf: t=46, chunk=0, pos_in_chunk=46
+- 结论: 问题在 megakernel 计算本身，cache store 无关
+
+### 调试实验 D8: 逐 head 分析
+- 状态: 有效（定位到具体 head）
+- 结果:
+  - **仅 head 20 和 21 受影响**（共 32 heads，其余 30 个 OK，max_diff < 0.016）
+  - Head 20: 首 Inf t=46, 首 NaN t=47
+  - Head 21: 首 NaN t=50
+  - 两个 head 共享 key group 10 (Hg=16, H=32, group=2)
+
+### 调试实验 D9: 根因确认 — exp2(-g_cumsum) 溢出
+- 状态: 有效（根因已确认）
+- 分析:
+  - Head 20 的 g 值大（|g| ≈ 1.8-2.4），64 token chunk 内 g_cumsum 累加到 -177 (log2 base)
+  - megakernel 第 789 行: `g_gate = exp2(g_row) * exp2(-g_col)`, 因式分解两个 exp2
+  - 当 g_col < -128 (log2)，`exp2(-g_col)` = exp2(>128) 溢出 fp32
+  - `exp2(very_negative) * Inf` = 0 × Inf = NaN
+  - **首次溢出精确对应 t=46**: g_cumsum_log2[46] = -129.10, 刚好超过 fp32 exp2 上限 128
+- 验证:
+  - clamp g to [-1.3, 0] (防止 cumsum 超过 -88 nat / -127 log2) → nan=0, inf=0
+  - 只 clamp head 20-21 → nan=0, inf=0
+  - scale g by 0.5 → nan=0, inf=0
+- 修复方向: megakernel 应计算 `exp2(g_row - g_col)` 而非 `exp2(g_row) * exp2(-g_col)`
+
+### 调试实验 D10: 修复并验证
+- 状态: 有效（修复成功）
+- 改动: 3 个 megakernel 文件中的 `g_gate = exp2(g_row) * exp2(-g_col)` 改为 `g_gate = exp2(g_row - g_col)`
+  - `flydsl_chunk_gdn_mi308x.py` (BDV64 主路径)
+  - `flydsl_chunk_gdn_mi308x_fast.py` (BDV64 fast 变体)
+  - `flydsl_chunk_gdn_mi308x_bdv32_fast.py` (BDV32 small-H 变体)
+  - line 860-861 的 `g_rev = g_last - g_row` **不需要修复** (方向正确，结果 < 1)
+- 离线验证:
+  - 使用保存的真实 Qwen3.5-9B 输入 (T=560)
+  - 修复前: FlyDSL nan=30653 inf=4291
+  - 修复后: FlyDSL nan=0 inf=0, 与 Triton cos=0.999997, max_abs_diff=1.56e-2
+- 服务验证:
+  - USE_FLYDSL=1 + 短请求 (11 tokens): HTTP 200, 输出正常
+  - USE_FLYDSL=1 + 长请求 (560 tokens): HTTP 200, 输出正常, 100 tokens 生成
+  - USE_FLYDSL=1 + 第二个长请求 (531 tokens): HTTP 200, 输出正常, 稳定
+- 结论: **coredump 问题已修复**
+
 ## 当前状态
-- 当前 Phase: Phase 5 validation/performance sweep
-- 当前 sub-skill: final-validation
-- 当前状态: P0 `(2,8,128,128)` 和 P1 `(8,16,128,128)` 已通过 BDV32 small-H
-  FlyDSL fast module 修复主要性能问题；tiny suffix `input_len=1/17` 和
-  Qwen3.5 0.8B/2B shapes 仍不在本轮范围。gpu-wiki standalone 397B-TP2
-  back-half 已改用移植后的 Triton baseline 记录，P50 speedup 为
-  `1.644-1.720x`。另需单独调查 Triton baseline 在 `(16,48)/(16,64)`
-  long normal `input_len=200000` 的 memory fault。
+- 当前 Phase: 修复已完成
+- 根因: megakernel 的 `g_gate = exp2(g_row) * exp2(-g_col)` 因式分解，当 g_cumsum_log2 < -128 时 `exp2(-g_col)` 溢出 fp32，导致 Inf × 0 = NaN → 传播至 logits → sampler GPU assert → coredump
+- 修复: 改为 `g_gate = exp2(g_row - g_col)` 直接计算差值再取 exp2，避免中间溢出
+- 影响范围: 仅影响 GDN 层的 decay gate (g) 值较大（|g| > 1.3/token 平均）的 head，在一个 64-token chunk 内 g_cumsum 累加超过 -88.7 (nat log) / -128 (log2) 时触发
+- 下一步: debug 代码已 revert；需要确认修改未影响 correctness 测试

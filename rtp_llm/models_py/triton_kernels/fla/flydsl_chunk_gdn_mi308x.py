@@ -721,11 +721,8 @@ def build_megakernel(
                 g_exp_row = [
                     math_dialect.exp2(g_row_vals[ii]) for ii in range_constexpr(4)
                 ]
-                g_inv_col = [None] * 4
-                for nt in range_constexpr(4):
-                    g_inv_col[nt] = math_dialect.exp2(
-                        arith.subf(zero_f32, g_col_vals[nt])
-                    )
+                # g_col_vals used directly below via exp2(g_row - g_col)
+                # to avoid fp32 overflow from separate exp2(-g_col)
 
                 for nt in range_constexpr(NT_BDV):
                     for ii in range_constexpr(4):
@@ -786,7 +783,9 @@ def build_megakernel(
                         abs_row = wave_id * 16 + (lane // 16) * 4 + ii
                         abs_col = nt * 16 + lane % 16
 
-                        g_gate = arith.mulf(g_exp_row[ii], g_inv_col[nt])
+                        g_gate = math_dialect.exp2(
+                            arith.subf(g_row_vals[ii], g_col_vals[nt])
+                        )
                         causal = arith.cmpi(arith.CmpIPredicate.sge, abs_row, abs_col)
                         g_masked = arith.select(causal, g_gate, zero_f32)
 
