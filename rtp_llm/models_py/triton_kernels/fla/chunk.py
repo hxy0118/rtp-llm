@@ -49,7 +49,6 @@ FLYDSL_CHUNK_GDN_TARGET_SHAPES = frozenset(
 FLYDSL_CHUNK_GDN_ENABLED_SHAPES = frozenset(
     {
         (16, 16, 128, 128),
-        (8, 8, 128, 128),
         (16, 32, 128, 128),
         (8, 16, 128, 128),
         (16, 48, 128, 128),
@@ -60,6 +59,8 @@ FLYDSL_CHUNK_GDN_ENABLED_SHAPES = frozenset(
         (2, 8, 128, 128),
     }
 )
+
+FLYDSL_CHUNK_GDN_MIN_SEQ_LEN = 64
 
 
 def _use_flydsl_chunk_gdn() -> bool:
@@ -95,6 +96,10 @@ def is_flydsl_chunk_gdn_shape_supported(
     if beta.dtype != torch.bfloat16:
         return False
     return _flydsl_chunk_gdn_shape(q, v) in FLYDSL_CHUNK_GDN_ENABLED_SHAPES
+
+
+def is_flydsl_chunk_gdn_length_supported(q: torch.Tensor) -> bool:
+    return q.shape[1] >= FLYDSL_CHUNK_GDN_MIN_SEQ_LEN
 
 
 def _validate_flydsl_chunk_gdn_inputs(

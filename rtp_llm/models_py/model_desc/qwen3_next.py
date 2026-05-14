@@ -37,6 +37,7 @@ from rtp_llm.models_py.triton_kernels.fla.chunk import (
     chunk_gated_delta_rule,
     chunk_gated_delta_rule_flydsl_with_cache_store,
     is_flydsl_chunk_gdn_enabled,
+    is_flydsl_chunk_gdn_length_supported,
     is_flydsl_chunk_gdn_shape_supported,
 )
 from rtp_llm.models_py.triton_kernels.fla.fused_recurrent import (
@@ -256,6 +257,7 @@ class Qwen3NextGatedDeltaNetPrefill(Qwen3NextGatedDeltaNetBase):
         use_flydsl_chunk_gdn = (
             is_flydsl_chunk_gdn_enabled()
             and is_flydsl_chunk_gdn_shape_supported(query, key, value, beta)
+            and is_flydsl_chunk_gdn_length_supported(query)
         )
         if use_flydsl_chunk_gdn:
             attn_out, final_state = chunk_gated_delta_rule_flydsl_with_cache_store(
@@ -712,6 +714,7 @@ class Qwen3NextGatedDeltaNet(nn.Module):
         use_flydsl_chunk_gdn = (
             is_flydsl_chunk_gdn_enabled()
             and is_flydsl_chunk_gdn_shape_supported(query, key, value, beta)
+            and is_flydsl_chunk_gdn_length_supported(query)
         )
         if use_flydsl_chunk_gdn:
             attn_out, final_state = chunk_gated_delta_rule_flydsl_with_cache_store(
