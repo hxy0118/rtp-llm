@@ -126,6 +126,7 @@ requirement([
     "portalocker",
     "concurrent_log_handler",
     "aiter",
+    "flydsl",
     "fastsafetensors",
     "pybind11_stubgen",
 ] + deep + flashinfer_with_cache + flashmla + rtp_kernel + flashattn)
@@ -496,6 +497,7 @@ py_library(
             ":embedding",
             "//rtp_llm/tools/convert:convert",
             ":aiter",
+            ":flydsl",
         ],
         "//conditions:default": [
             ":models",

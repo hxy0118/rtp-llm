@@ -70,6 +70,7 @@ py_library(
     ] + select({
         "@//:using_rocm": [
             "//rtp_llm:aiter",
+            "//rtp_llm:flydsl",
             "//rtp_llm:amdsmi",
         ],
         "@//:using_cuda12": [

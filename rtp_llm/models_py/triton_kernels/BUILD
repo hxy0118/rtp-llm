@@ -1,7 +1,10 @@
 py_library(
     name = "fla",
     srcs = glob(["fla/*.py"]),
-    deps = [":common"],
+    deps = [":common"] + select({
+        "@//:using_rocm": ["//rtp_llm:flydsl"],
+        "//conditions:default": [],
+    }),
     visibility = ["//visibility:public"]
 )
 

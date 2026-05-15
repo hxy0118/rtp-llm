@@ -493,6 +493,9 @@ filelock==3.20.0 \
     #   huggingface-hub
     #   torch
     #   transformers
+flydsl @ https://artlab.alibaba-inc.com/1/PYPI/simple/flydsl/%252Fartlab-pypi-central-proxy%252Fpackages%252F24%252F02%252F5e650f6987b703c7574433aeeec0ece69c171891843114bd42df67f44c49/flydsl-0.1.7-cp310-cp310-manylinux_2_27_x86_64.whl \
+    --hash=sha256:959cb95b145ad944e90a23bde9926da60ff53c99c6c2541d73c318673190d2c2
+    # via -r deps/requirements_rocm.txt
 fonttools==4.53.1 \
     --hash=sha256:02569e9a810f9d11f4ae82c391ebc6fb5730d95a0657d24d754ed7763fb2d122 \
     --hash=sha256:0679a30b59d74b6242909945429dbddb08496935b82f91ea9bf6ad240ec23397 \
