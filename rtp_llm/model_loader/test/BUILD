@@ -27,3 +27,13 @@ py_test(
     srcs = ["test_per_channel_fp8_helpers.py"],
     deps = py_test_deps,
 )
+
+py_test(
+    name = "test_inline_fp8_quant",
+    srcs = ["test_inline_fp8_quant.py"],
+    deps = py_test_deps,
+    tags = ["MI308X"],
+    exec_properties = {
+        'gpu': 'MI308X',
+    },
+)
