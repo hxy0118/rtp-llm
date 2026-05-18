@@ -1,6 +1,9 @@
 import time
 
 st = time.time()
+
+import rtp_llm.utils.aiter_compat  # noqa: F401, E402  # must run before any `import aiter`
+
 try:
     import triton
 except ImportError:
