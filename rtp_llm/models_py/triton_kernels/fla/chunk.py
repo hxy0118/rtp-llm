@@ -64,7 +64,14 @@ FLYDSL_CHUNK_GDN_MIN_SEQ_LEN = 64
 
 
 def _use_flydsl_chunk_gdn() -> bool:
-    return os.getenv("USE_FLYDSL", "0").strip().lower() in _TRUE_ENV_VALUES
+    return (
+        os.getenv("USE_FLYDSL", "0").strip().lower() in _TRUE_ENV_VALUES
+        or os.getenv("USE_FLYDSL_WIKI", "0").strip().lower() in _TRUE_ENV_VALUES
+    )
+
+
+def _use_flydsl_wiki() -> bool:
+    return os.getenv("USE_FLYDSL_WIKI", "0").strip().lower() in _TRUE_ENV_VALUES
 
 
 def is_flydsl_chunk_gdn_enabled() -> bool:
@@ -314,9 +321,17 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
         cu_seqlens=cu_seqlens,
     )
 
-    from rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi308x import (
-        megakernel_fwd,
-    )
+    if _use_flydsl_wiki():
+        import sys
+
+        _wiki_path = "/root/gpu-wiki/reference-kernels/amd/cdna3/flydsl/FlyDSL"
+        if _wiki_path not in sys.path:
+            sys.path.insert(0, _wiki_path)
+        from fused_fwd_mi308x_v2 import megakernel_fwd
+    else:
+        from rtp_llm.models_py.triton_kernels.fla.flydsl_chunk_gdn_mi308x import (
+            megakernel_fwd,
+        )
 
     flydsl_initial_state = (
         initial_state.float()
