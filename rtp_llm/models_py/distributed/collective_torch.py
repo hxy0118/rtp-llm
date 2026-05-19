@@ -576,6 +576,22 @@ def broadcast(tensor: torch.Tensor, src: int, group: Group) -> None:
 # AllReduce tier helpers — each returns Optional[Tensor]
 # ---------------------------------------------------------------------------
 
+def _finalize_inplace(
+    tensor: torch.Tensor, result: Optional[torch.Tensor],
+) -> Optional[torch.Tensor]:
+    """Preserve all_reduce's in-place contract.
+
+    Accelerated kernels (quick / aiter) write to a freshly allocated buffer.
+    Callers of ``all_reduce`` may still hold the original ``tensor`` and
+    expect it to be updated; copy the result back so storage identity and
+    return value match the NCCL/symm_mem branches.
+    """
+    if result is None:
+        return None
+    if result is not tensor:
+        tensor.copy_(result)
+    return tensor
+
 def _try_quick_allreduce(
     tensor: torch.Tensor, tp_group: torch.distributed.ProcessGroup,
 ) -> Optional[torch.Tensor]:
@@ -655,17 +671,19 @@ def all_reduce(tensor: torch.Tensor, group: Group) -> torch.Tensor:
         tp_group = _get_group(group)
 
         if _enable_quick_allreduce:
-            result = _try_quick_allreduce(tensor, tp_group)
+            result = _finalize_inplace(tensor, _try_quick_allreduce(tensor, tp_group))
             if result is not None:
                 return result
 
         if _enable_trtllm_allreduce:
-            result = _try_trtllm_allreduce(tensor, tp_group)
+            result = _finalize_inplace(tensor, _try_trtllm_allreduce(tensor, tp_group))
             if result is not None:
                 return result
 
         if _enable_aiter_custom_ar:
-            result = _try_aiter_custom_allreduce(tensor, tp_group)
+            result = _finalize_inplace(
+                tensor, _try_aiter_custom_allreduce(tensor, tp_group),
+            )
             if result is not None:
                 return result
 

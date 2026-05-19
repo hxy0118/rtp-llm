@@ -277,16 +277,28 @@ def set_hipgraph_capture_nccl_comm(
 # ---------------------------------------------------------------------------
 # ROCm AllReduce strategy flags (single source of truth — read once at import).
 #
-# ROCM_ALLREDUCE_STRATEGY: comma-separated list of strategies to try in order.
+# ROCM_ALLREDUCE_STRATEGY is an *enable-set*, not a priority list. The env
+# value is parsed as a comma-separated set of tokens; token order is ignored.
+# Dispatch always uses a fixed precision/speed priority:
+#
+#     quick → trtllm → aiter → symm_mem → NCCL
+#
 # Valid tokens: quick, trtllm, aiter, none (default: none)
-#   quick  — aiter Quick AllReduce (quantised, fastest)
+#   quick  — aiter Quick AllReduce (quantised, fastest, lossy)
 #   trtllm — trtllm allreduce kernel (lossless, hidden-size restricted)
-#   aiter  — aiter P2P custom allreduce (lossless)
+#   aiter  — aiter P2P custom allreduce (lossless, most general)
 #   none   — no accelerated kernel, fall through to symm_mem / NCCL
+#
+# To opt out of a tier, omit it from the env value.
 # ---------------------------------------------------------------------------
 _VALID_STRATEGIES = {"quick", "trtllm", "aiter", "none"}
 
-def _parse_strategies() -> set:
+def _parse_enabled_strategies() -> set:
+    """Parse ROCM_ALLREDUCE_STRATEGY into a set of enabled tier tokens.
+
+    Order of tokens in the env string is intentionally ignored — dispatch
+    priority is fixed by the call sites (quick → trtllm → aiter).
+    """
     raw = os.environ.get("ROCM_ALLREDUCE_STRATEGY", "none").lower()
     tokens = {s.strip() for s in raw.split(",") if s.strip()}
     invalid = tokens - _VALID_STRATEGIES
@@ -298,7 +310,7 @@ def _parse_strategies() -> set:
     return tokens if tokens else {"none"}
 
 _rocm_allreduce_strategies: set = (
-    _parse_strategies() if _is_rocm_runtime else {"none"}
+    _parse_enabled_strategies() if _is_rocm_runtime else {"none"}
 )
 _enable_quick_allreduce: bool = "quick" in _rocm_allreduce_strategies
 _enable_trtllm_allreduce: bool = "trtllm" in _rocm_allreduce_strategies
@@ -306,7 +318,8 @@ _enable_aiter_custom_ar: bool = "aiter" in _rocm_allreduce_strategies
 
 if _is_rocm_runtime and _rocm_allreduce_strategies != {"none"}:
     logging.info(
-        "ROCm AllReduce enabled strategies: %s",
+        "ROCm AllReduce enabled tiers (dispatch order is fixed "
+        "quick→trtllm→aiter→symm_mem→NCCL): %s",
         sorted(_rocm_allreduce_strategies - {"none"}),
     )
 

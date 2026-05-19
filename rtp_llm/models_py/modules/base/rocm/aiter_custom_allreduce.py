@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_SIZE = 128 * 1024 * 1024  # 128 MB
 
+# Aiter custom AR kernel only handles BF16 and FP8 (e4m3fn / e4m3fnuz).
+# FP16/FP32 must fall through to the next tier; otherwise the BF16-typed
+# kernel reads them as garbage and produces wrong values.
+_SUPPORTED_DTYPES = (
+    torch.bfloat16,
+    torch.float8_e4m3fn,
+    torch.float8_e4m3fnuz,
+)
+
 class _AiterARManager:
     """Singleton that manages aiter custom AllReduce via low-level ops."""
 
@@ -208,6 +217,8 @@ class _AiterARManager:
         if not self.initialized or self.disabled or self.fa == 0:
             return False
         if self.group is not group or self.device_id != device_id:
+            return False
+        if tensor.dtype not in _SUPPORTED_DTYPES:
             return False
         inp_size = tensor.numel() * tensor.element_size()
         if inp_size % 16 != 0:
