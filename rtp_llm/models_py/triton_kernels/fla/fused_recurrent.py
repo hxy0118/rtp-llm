@@ -110,9 +110,10 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
 
     mask_k = o_k < K
     mask_v = o_v < V
-    mask_h = mask_k[:, None] & mask_v[None, :]
+    # V-first b_h: (BV, BK), matches the on-disk ssm_states (V, K) layout.
+    mask_h = mask_v[:, None] & mask_k[None, :]
 
-    b_h = tl.zeros([BK, BV], dtype=tl.float32)
+    b_h = tl.zeros([BV, BK], dtype=tl.float32)
     if USE_INITIAL_STATE:
         if IS_CONTINUOUS_BATCHING:
             load_block_offset = cal_block_idx(sequence_length - 1, SEQ_SIZE_PER_BLOCK)
@@ -124,7 +125,7 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
             p_h0 = h0 + read_block_id * stride_init_state_token
         else:
             p_h0 = h0 + bos * HV * K * V
-        p_h0 = p_h0 + i_hv * K * V + o_k[:, None] * V + o_v[None, :]
+        p_h0 = p_h0 + i_hv * K * V + o_v[:, None] * K + o_k[None, :]
         b_h += tl.load(p_h0, mask=mask_h, other=0).to(tl.float32)
 
     for i_t in range(0, T):
@@ -137,19 +138,19 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
             b_q = b_q / tl.sqrt(tl.sum(b_q * b_q) + 1e-6)
             b_k = b_k / tl.sqrt(tl.sum(b_k * b_k) + 1e-6)
         b_q = b_q * scale
-        # [BK, BV]
+        # [BV, BK]
         b_h *= exp(b_g)
-        # [BV]
-        b_v -= tl.sum(b_h * b_k[:, None], 0)
+        # b_v[v] -= sum_k b_h[v, k] * b_k[k]
+        b_v -= tl.sum(b_h * b_k[None, :], 1)
         if IS_BETA_HEADWISE:
             b_beta = tl.load(p_beta, mask=mask_v, other=0).to(tl.float32)
         else:
             b_beta = tl.load(p_beta).to(tl.float32)
         b_v *= b_beta
-        # [BK, BV]
-        b_h += b_k[:, None] * b_v[None, :]
-        # [BV]
-        b_o = tl.sum(b_h * b_q[:, None], 0)
+        # [BV, BK] = outer(b_v, b_k)
+        b_h += b_v[:, None] * b_k[None, :]
+        # b_o[v] = sum_k b_h[v, k] * b_q[k]
+        b_o = tl.sum(b_h * b_q[None, :], 1)
         tl.store(p_o, b_o.to(p_o.dtype.element_ty), mask=mask_v)
 
         # keep the states for multi-query tokens
@@ -163,7 +164,7 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
             p_ht = ht + write_block_id * stride_final_state_token
         else:
             p_ht = ht + (bos + i_t) * stride_final_state_token
-        p_ht = p_ht + i_hv * K * V + o_k[:, None] * V + o_v[None, :]
+        p_ht = p_ht + i_hv * K * V + o_v[:, None] * K + o_k[None, :]
         tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_h)
 
         p_q += stride_qs
@@ -202,7 +203,7 @@ def fused_recurrent_gated_delta_rule_fwd(
     if inplace_final_state:
         final_state = initial_state
     else:
-        final_state = q.new_empty(T, HV, K, V, dtype=initial_state.dtype)
+        final_state = q.new_empty(T, HV, V, K, dtype=initial_state.dtype)
 
     stride_init_state_token = initial_state.stride(0)
     stride_final_state_token = final_state.stride(0)

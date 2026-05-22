@@ -93,7 +93,9 @@ def is_flydsl_chunk_gdn_shape_supported(
         or v.dtype != torch.bfloat16
     ):
         return False
-    if beta.dtype != torch.bfloat16:
+    # beta may be fp32 (preferred, matching SGL) or bf16; the FlyDSL wrapper
+    # casts fp32 -> bf16 before launching the megakernel.
+    if beta.dtype not in (torch.bfloat16, torch.float32):
         return False
     return _flydsl_chunk_gdn_shape(q, v) in FLYDSL_CHUNK_GDN_ENABLED_SHAPES
 
@@ -119,8 +121,10 @@ def _validate_flydsl_chunk_gdn_inputs(
         or v.dtype != torch.bfloat16
     ):
         errors.append(f"q/k/v must be bf16, got {q.dtype}/{k.dtype}/{v.dtype}")
-    if beta.dtype != torch.bfloat16:
-        errors.append(f"beta must be bf16, got {beta.dtype}")
+    # The wrapper casts fp32 -> bf16 before launching the FlyDSL megakernel,
+    # so accept either here. Other dtypes are still rejected.
+    if beta.dtype not in (torch.bfloat16, torch.float32):
+        errors.append(f"beta must be bf16 or fp32, got {beta.dtype}")
     shape = (Hg, H, K, V)
     if shape not in FLYDSL_CHUNK_GDN_ENABLED_SHAPES:
         target_note = (
@@ -253,6 +257,13 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
                 f"The number of initial states is expected to be {expected_states} "
                 f"rather than {initial_state.shape[0]}."
             )
+    # FlyDSL megakernel hard-codes T.bf16 for the in-LDS beta pipeline
+    # (flydsl_chunk_gdn_mi308x.py: lds_beta is T.bf16, buffer_load_bf16_or_zero
+    # for beta). When fused_gdn_gating now returns fp32 beta to match SGL, we
+    # cast back to bf16 right before the megakernel; the rest of the path
+    # (kkt/solve/etc.) is dtype-agnostic.
+    if beta.dtype != torch.bfloat16:
+        beta = beta.to(torch.bfloat16)
     _validate_flydsl_chunk_gdn_inputs(q=q, k=k, v=v, beta=beta)
     _, _, H, V = v.shape
     K = k.shape[-1]
@@ -421,11 +432,11 @@ def chunk_gated_delta_rule(
             Scale factor for the RetNet attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
         initial_state (Optional[torch.Tensor]):
-            Initial state of shape `[N, H, K, V]` for `N` input sequences.
+            Initial state of shape `[N, H, V, K]` for `N` input sequences.
             For equal-length input sequences, `N` equals the batch size `B`.
             Default: `None`.
         output_final_state (Optional[bool]):
-            Whether to output the final state of shape `[N, H, K, V]`. Default: `False`.
+            Whether to output the final state of shape `[N, H, V, K]`. Default: `False`.
         cu_seqlens (torch.LongTensor):
             Cumulative sequence lengths of shape `[N+1]` used for variable-length training,
             consistent with the FlashAttention API.
@@ -437,7 +448,7 @@ def chunk_gated_delta_rule(
         o (torch.Tensor):
             Outputs of shape `[B, T, H, V]` if `head_first=False` else `[B, H, T, V]`.
         final_state (torch.Tensor):
-            Final state of shape `[N, H, K, V]` if `output_final_state=True` else `None`.
+            Final state of shape `[N, H, V, K]` if `output_final_state=True` else `None`.
 
     Examples::
         >>> import torch
@@ -451,7 +462,7 @@ def chunk_gated_delta_rule(
         >>> v = torch.randn(B, T, H, V, dtype=torch.bfloat16, device='cuda')
         >>> beta = torch.rand(B, T, H, dtype=torch.bfloat16, device='cuda').sigmoid()
         >>> g = F.logsigmoid(torch.rand(B, T, H, dtype=torch.bfloat16, device='cuda'))
-        >>> h0 = torch.randn(B, H, K, V, dtype=torch.bfloat16, device='cuda')
+        >>> h0 = torch.randn(B, H, V, K, dtype=torch.bfloat16, device='cuda')
         >>> o, ht = chunk_gated_delta_rule(
             q, k, v, g, beta,
             initial_state=h0,

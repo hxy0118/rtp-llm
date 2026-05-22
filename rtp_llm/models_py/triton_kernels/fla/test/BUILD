@@ -96,3 +96,18 @@ py_test(
     ] + [":torch", ":triton", ":einops"],
     visibility = ["//visibility:public"],
 )
+
+# Numeric + cache-byte equivalence for the FlyDSL Chunk-GDN direct-store path,
+# pinned to ROCm (MI308X) because the FlyDSL megakernel only runs on AMD.
+py_test(
+    name = "test_flydsl_chunk_gdn_cache_store",
+    srcs = [
+        "test_flydsl_chunk_gdn_cache_store.py"
+    ],
+    deps = [
+        "//rtp_llm/models_py/triton_kernels:fla",
+    ] + [":triton", ":torch", ":numpy", ":einops", ":packaging"],
+    visibility = ["//visibility:public"],
+    tags = ["rocm"],
+    exec_properties = {'gpu':'MI308X-ROCM7'},
+)

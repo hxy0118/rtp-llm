@@ -75,7 +75,10 @@ def fused_gdn_gating(
 
     grid = (batch, seq_len, triton.cdiv(num_heads, 8))
     g = torch.empty(1, batch, num_heads, dtype=torch.float32, device=a.device)
-    beta_output = torch.empty(1, batch, num_heads, dtype=b.dtype, device=b.device)
+    # Match SGL's fused_gdn_gating_prefill: keep beta in fp32 to avoid lossy
+    # sigmoid -> bf16 truncation before the chunk / recurrent kernels promote
+    # it back to fp32 internally.
+    beta_output = torch.empty(1, batch, num_heads, dtype=torch.float32, device=b.device)
     fused_gdn_gating_kernel[grid](
         g,
         beta_output,
