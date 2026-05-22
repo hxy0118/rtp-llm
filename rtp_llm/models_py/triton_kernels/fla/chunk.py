@@ -257,13 +257,13 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
                 f"The number of initial states is expected to be {expected_states} "
                 f"rather than {initial_state.shape[0]}."
             )
-    # FlyDSL megakernel hard-codes T.bf16 for the in-LDS beta pipeline
+    # Keep fp32 beta for kkt/solve so the SGL-aligned fp32 sigmoid output of
+    # fused_gdn_gating is not truncated before A is computed. The FlyDSL
+    # megakernel itself hard-codes T.bf16 for the in-LDS beta pipeline
     # (flydsl_chunk_gdn_mi308x.py: lds_beta is T.bf16, buffer_load_bf16_or_zero
-    # for beta). When fused_gdn_gating now returns fp32 beta to match SGL, we
-    # cast back to bf16 right before the megakernel; the rest of the path
-    # (kkt/solve/etc.) is dtype-agnostic.
-    if beta.dtype != torch.bfloat16:
-        beta = beta.to(torch.bfloat16)
+    # for beta), so we cast to bf16 only when launching the megakernel below.
+    # _validate_flydsl_chunk_gdn_inputs accepts both fp32 and bf16 beta, so
+    # nothing has to change about the value we hand it.
     _validate_flydsl_chunk_gdn_inputs(q=q, k=k, v=v, beta=beta)
     _, _, H, V = v.shape
     K = k.shape[-1]
@@ -318,6 +318,8 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
         scale=RCP_LN2,
         cu_seqlens=cu_seqlens,
     )
+    # kkt/solve runs on the original beta (fp32 when fused_gdn_gating produced
+    # fp32) so A is not lossy. Only the FlyDSL megakernel needs bf16 beta.
     A = chunk_gated_delta_rule_fwd_intra_a_only(
         k=k,
         g=g,
@@ -339,13 +341,16 @@ def chunk_gated_delta_rule_flydsl_with_cache_store(
         if cu_seqlens is not None and cu_seqlens.dtype != torch.long
         else cu_seqlens
     )
+    beta_bf16 = (
+        beta if beta.dtype == torch.bfloat16 else beta.to(torch.bfloat16).contiguous()
+    )
     o, final_state = megakernel_fwd(
         q=q,
         k=k,
         v=v,
         a=A,
         g=g,
-        beta=beta,
+        beta=beta_bf16,
         scale=scale,
         initial_state=flydsl_initial_state,
         output_final_state=output_final_state,

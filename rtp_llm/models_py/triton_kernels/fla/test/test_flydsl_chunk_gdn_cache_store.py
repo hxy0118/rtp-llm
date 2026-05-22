@@ -333,6 +333,116 @@ class FlyDSLChunkGDNCacheStoreTest(unittest.TestCase):
                         tag=f"shape={shape} seq_lens={seq_lens}",
                     )
 
+    def test_initial_state_with_prefix(self):
+        """USE_INITIAL_STATE branch: prefix_lengths > 0 + non-None
+        initial_state. Exercises the FlyDSL h0 load path and the middle-
+        chunk store_h_to_ssm_block path that fires when prefix-aligned
+        block boundaries land inside the current dispatch."""
+        shape = (16, 32, 128, 128)
+        hg, h, k_dim, v_dim = shape
+        device = torch.device("cuda")
+
+        prefix_T = 128  # 2 prefix blocks already cached
+        suffix_T = 192  # 3 chunks of 64 = 3 suffix blocks
+        seq_size_per_block = SEQ_SIZE_PER_BLOCK
+        n_prefix_blocks = prefix_T // seq_size_per_block
+        n_suffix_blocks = (suffix_T + seq_size_per_block - 1) // seq_size_per_block
+        total_blocks = n_prefix_blocks + n_suffix_blocks + 1  # +1 sentinel
+
+        cu_seqlens = torch.tensor([0, suffix_T], device=device, dtype=torch.int32)
+        prefix_lengths = torch.tensor([prefix_T], device=device, dtype=torch.int32)
+        block_map = torch.tensor(
+            [list(range(1, n_prefix_blocks + n_suffix_blocks + 1))],
+            device=device,
+            dtype=torch.int32,
+        )
+
+        q, k, v, g, beta, _ = _build_inputs(shape, suffix_T, cu_seqlens=cu_seqlens)
+        initial_state = (
+            torch.randn(1, h, v_dim, k_dim, device=device, dtype=torch.float32) / 8
+        )
+
+        # Path A: Triton chunk_gated_delta_rule + store_ssm_state_to_block_map
+        ssm_t = _alloc_ssm_states(total_blocks, shape)
+        o_t, h_t, last_t = chunk_gated_delta_rule(
+            q=q,
+            k=k,
+            v=v,
+            g=g,
+            beta=beta,
+            initial_state=initial_state.clone(),
+            output_final_state=True,
+            cu_seqlens=cu_seqlens,
+            head_first=False,
+            use_qk_l2norm_in_kernel=True,
+        )
+        store_ssm_state_to_block_map(
+            h=h_t.to(torch.float32),
+            final_states=last_t.to(torch.float32),
+            prefix_lengths=prefix_lengths,
+            cu_seqlens=cu_seqlens,
+            block_map=block_map,
+            ssm_states=ssm_t,
+            seq_size_per_block=seq_size_per_block,
+            chunk_size=CHUNK_BT,
+        )
+
+        # Path B: FlyDSL direct-store, USE_INITIAL_STATE branch
+        ssm_f = _alloc_ssm_states(total_blocks, shape)
+        o_f, _ = chunk_gated_delta_rule_flydsl_with_cache_store(
+            q=q,
+            k=k,
+            v=v,
+            g=g,
+            beta=beta,
+            prefix_lengths=prefix_lengths,
+            block_map=block_map,
+            ssm_states=ssm_f,
+            seq_size_per_block=seq_size_per_block,
+            initial_state=initial_state.clone(),
+            output_final_state=True,
+            cu_seqlens=cu_seqlens,
+            use_qk_l2norm_in_kernel=True,
+        )
+        torch.cuda.synchronize()
+
+        self.assertTrue(
+            torch.isfinite(o_t).all() and torch.isfinite(o_f).all(),
+            "attn_out has non-finite",
+        )
+        diff_o = (o_t.float() - o_f.float()).abs()
+        cos_o = torch.nn.functional.cosine_similarity(
+            o_t.float().flatten().unsqueeze(0),
+            o_f.float().flatten().unsqueeze(0),
+        ).item()
+        self.assertGreater(
+            cos_o,
+            0.999,
+            f"attn_out cos = {cos_o:.6f} (max diff {diff_o.max().item():.3e})",
+        )
+
+        diff_ssm = (ssm_t.float() - ssm_f.float()).abs()
+        cos_ssm = torch.nn.functional.cosine_similarity(
+            ssm_t.float().flatten().unsqueeze(0),
+            ssm_f.float().flatten().unsqueeze(0),
+        ).item()
+        self.assertGreater(
+            cos_ssm,
+            0.99999,
+            f"ssm_states cos = {cos_ssm:.6f} "
+            f"(max diff {diff_ssm.max().item():.3e})",
+        )
+        # Per-block write-set parity: both paths must write the same set of
+        # cache blocks (skipping prefix slots, writing suffix slots).
+        for bi in range(total_blocks):
+            wrote_t = (ssm_t[bi] != -999.0).any().item()
+            wrote_f = (ssm_f[bi] != -999.0).any().item()
+            self.assertEqual(
+                wrote_t,
+                wrote_f,
+                f"block {bi} write mismatch (triton={wrote_t} flydsl={wrote_f})",
+            )
+
     def test_decode_round_trip_reads_cache(self):
         """End-to-end: prefill writes ssm_states via either path, decode
         consumes it as initial_state, outputs should match."""
