@@ -5,7 +5,7 @@ import logging
 import os
 from datetime import timedelta
 from enum import Enum
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torch.distributed
@@ -34,8 +34,11 @@ class Group(Enum):
 # Global process group storage
 # Key can be Group enum or string (for multiple DP/TP groups)
 _group_map: Dict[Union[Group, str], torch.distributed.ProcessGroup] = {}
+_quick_allreduce_group_map: Dict[Union[Group, str], torch.distributed.ProcessGroup] = {}
+_quick_allreduce_comm_map: Dict[Union[Group, str], Any] = {}
 _parallelism_config: Optional[ParallelismConfig] = None
 _initialized: bool = False  # Track if we've initialized (to prevent double init)
+_quick_allreduce_warned: bool = False
 
 
 def init_distributed_environment(
@@ -71,6 +74,7 @@ def init_distributed_environment(
         if not _group_map:
             _create_process_groups(parallelism_config, backend, timedelta(days=36500))
             _register_process_groups_to_cpp()
+        _maybe_preinit_aiter_quick_allreduce()
         if rocm_rccl.is_available_runtime() and parallelism_config.tp_size > 1:
             rocm_rccl.prepare_comm_if_needed(parallelism_config, _get_group(Group.TP))
         return
@@ -93,6 +97,7 @@ def init_distributed_environment(
         _parallelism_config = parallelism_config
         _initialized = True
         _register_process_groups_to_cpp()
+        _maybe_preinit_aiter_quick_allreduce()
         if rocm_rccl.is_available_runtime() and parallelism_config.tp_size > 1:
             rocm_rccl.prepare_comm_if_needed(parallelism_config, _get_group(Group.TP))
         return
@@ -127,9 +132,36 @@ def init_distributed_environment(
     _parallelism_config = parallelism_config
     _initialized = True
     _register_process_groups_to_cpp()
+    _maybe_preinit_aiter_quick_allreduce()
     if rocm_rccl.is_available_runtime() and parallelism_config.tp_size > 1:
         rocm_rccl.prepare_comm_if_needed(parallelism_config, _get_group(Group.TP))
     init_user_buffers_environment(parallelism_config)
+
+
+def _use_aiter_quick_allreduce() -> bool:
+    return os.environ.get("RTP_USE_AITER_QUICK_ALLREDUCE", "0") == "1"
+
+
+def _create_quick_allreduce_group_if_needed(
+    group_key: Union[Group, str],
+    ranks: List[int],
+    world_rank: int,
+) -> None:
+    if not _use_aiter_quick_allreduce():
+        return
+    if len(ranks) <= 1:
+        return
+    cpu_group = torch.distributed.new_group(
+        ranks=ranks,
+        backend="gloo",
+        timeout=timedelta(days=36500),
+    )
+    if world_rank in ranks:
+        _quick_allreduce_group_map[group_key] = cpu_group
+        logging.info(
+            f"[rank: {world_rank}] Stored AITER QuickAllReduce CPU group "
+            f"with key: {group_key} and ranks: {ranks}"
+        )
 
 
 def _create_process_groups(
@@ -191,9 +223,10 @@ def _create_process_groups(
                     backend=backend,
                     timeout=timedelta(days=36500),
                 )
+                group_key = Group.TP.name + str(dp_rank_val)
+                _create_quick_allreduce_group_if_needed(group_key, tp_ranks, world_rank)
                 # Only store the group if this rank is part of it
                 if world_rank in tp_ranks:
-                    group_key = Group.TP.name + str(dp_rank_val)
                     _group_map[group_key] = tp_group
                     logging.info(
                         f"[rank: {world_rank}] Stored TP group with key: {group_key} {tp_group} with ranks: {tp_ranks}"
@@ -205,6 +238,9 @@ def _create_process_groups(
                 torch.distributed.barrier()
     elif tp_size > 1 and world_size == tp_size:
         # Single TP group: WORLD is the TP group, init symm_mem for it
+        _create_quick_allreduce_group_if_needed(
+            Group.DP_AND_TP, list(range(world_size)), world_rank
+        )
         init_symm_mem_communicator(torch.distributed.group.WORLD)
 
 
@@ -426,7 +462,9 @@ def destroy_distributed_environment():
     After calling this function, init_distributed_environment() can be called again
     to reinitialize the distributed environment.
     """
-    global _group_map, _parallelism_config, _initialized
+    global _group_map, _quick_allreduce_group_map, _quick_allreduce_comm_map
+    global _quick_allreduce_warned
+    global _parallelism_config, _initialized
 
     rank = torch.distributed.get_rank()
     logging.info(f"[rank: {rank}] Destroying distributed environment")
@@ -454,13 +492,42 @@ def destroy_distributed_environment():
     if rocm_rccl.is_available_runtime():
         rocm_rccl.destroy_capture_comm()
 
+    for quick_comm in _quick_allreduce_comm_map.values():
+        close = getattr(quick_comm, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception as exc:
+                logging.warning("Failed to close AITER QuickAllReduce: %s", exc)
+
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
     _group_map.clear()
+    _quick_allreduce_group_map.clear()
+    _quick_allreduce_comm_map.clear()
+    _quick_allreduce_warned = False
     logging.info(f"[rank: {rank}] Distributed environment destroyed")
     _parallelism_config = None
     _initialized = False
     gc.collect()
+
+
+def _resolve_group_key(group: Group) -> Union[Group, str]:
+    if _parallelism_config is None:
+        raise RuntimeError(
+            "Distributed environment is not initialized. "
+            "Call init_distributed_environment(parallelism_config) first."
+        )
+    tp_size = _parallelism_config.tp_size
+    dp_size = _parallelism_config.dp_size
+    world_size = _parallelism_config.world_size
+    if group == Group.DP and dp_size > 1 and world_size != dp_size:
+        tp_rank = torch.distributed.get_rank() % tp_size
+        return Group.DP.name + str(tp_rank)
+    if group == Group.TP and tp_size > 1 and world_size != tp_size:
+        dp_rank = torch.distributed.get_rank() // tp_size
+        return Group.TP.name + str(dp_rank)
+    return Group.DP_AND_TP
 
 
 def _get_group(group: Group) -> torch.distributed.ProcessGroup:
@@ -496,20 +563,7 @@ def _get_group(group: Group) -> torch.distributed.ProcessGroup:
                 "or ensure parallelism_config is available for auto-initialization."
             )
 
-    # Determine the actual key to use in _group_map
-    group_key = group
-    tp_size = _parallelism_config.tp_size
-    dp_size = _parallelism_config.dp_size
-    world_size = _parallelism_config.world_size
-    if group == Group.DP and dp_size > 1 and world_size != dp_size:
-        tp_rank = torch.distributed.get_rank() % tp_size
-        group_key = Group.DP.name + str(tp_rank)
-    elif group == Group.TP and tp_size > 1 and world_size != tp_size:
-        dp_rank = torch.distributed.get_rank() // tp_size
-        group_key = Group.TP.name + str(dp_rank)
-    else:
-        # DP_AND_TP always uses Group.DP_AND_TP as key
-        group_key = Group.DP_AND_TP
+    group_key = _resolve_group_key(group)
 
     if group_key not in _group_map:
         raise ValueError(
@@ -561,6 +615,106 @@ def broadcast(tensor: torch.Tensor, src: int, group: Group) -> None:
     torch.distributed.broadcast(tensor, src, group=process_group)
 
 
+def _maybe_preinit_aiter_quick_allreduce() -> None:
+    if not _use_aiter_quick_allreduce():
+        return
+    if _parallelism_config is None or _parallelism_config.tp_size <= 1:
+        return
+    _get_aiter_quick_allreduce_comm(Group.TP)
+
+
+def _get_aiter_quick_allreduce_comm(group: Group):
+    global _quick_allreduce_warned
+    if group != Group.TP or not _use_aiter_quick_allreduce():
+        return None
+    if not rocm_rccl.is_available_runtime():
+        return None
+    if not torch.distributed.is_initialized():
+        return None
+
+    group_key = _resolve_group_key(group)
+    cpu_group = _quick_allreduce_group_map.get(group_key)
+    if cpu_group is None:
+        if not _quick_allreduce_warned:
+            logging.warning(
+                "RTP_USE_AITER_QUICK_ALLREDUCE=1 but no TP CPU group was created. "
+                "Fallback to the normal all-reduce path."
+            )
+            _quick_allreduce_warned = True
+        return None
+
+    quick_comm = _quick_allreduce_comm_map.get(group_key)
+    if quick_comm is not None:
+        return quick_comm
+
+    try:
+        if torch.cuda.is_current_stream_capturing():
+            return None
+    except Exception:
+        pass
+
+    os.environ.setdefault("AITER_QUICK_REDUCE_CAST_BF16_TO_FP16", "0")
+    os.environ.setdefault("AITER_QUICK_REDUCE_QUANTIZATION", "FP")
+    try:
+        from aiter.dist.device_communicators.quick_all_reduce import QuickAllReduce
+
+        quick_comm = QuickAllReduce(
+            group=cpu_group,
+            device=torch.cuda.current_device(),
+        )
+        _quick_allreduce_comm_map[group_key] = quick_comm
+        if getattr(quick_comm, "disabled", True):
+            logging.warning(
+                "AITER QuickAllReduce initialized as disabled for group %s. "
+                "Fallback to the normal all-reduce path.",
+                group_key,
+            )
+        else:
+            logging.info("AITER QuickAllReduce initialized for group %s", group_key)
+        return quick_comm
+    except Exception as exc:
+        if not _quick_allreduce_warned:
+            logging.warning(
+                "Failed to initialize AITER QuickAllReduce. "
+                "Fallback to the normal all-reduce path: %s",
+                exc,
+            )
+            _quick_allreduce_warned = True
+        return None
+
+
+def _is_weak_contiguous(tensor: torch.Tensor) -> bool:
+    return tensor.is_contiguous() or (
+        tensor.storage().nbytes() - tensor.storage_offset() * tensor.element_size()
+        == tensor.numel() * tensor.element_size()
+    )
+
+
+def _can_use_aiter_quick_allreduce(quick_comm: Any, tensor: torch.Tensor) -> bool:
+    if quick_comm is None or getattr(quick_comm, "disabled", True):
+        return False
+    if not tensor.is_cuda:
+        return False
+    if tensor.dtype not in (torch.float16, torch.bfloat16):
+        return False
+    tensor_size = tensor.numel() * tensor.element_size()
+    if tensor_size == 0 or tensor_size % 16 != 0:
+        return False
+    if not _is_weak_contiguous(tensor):
+        return False
+    qr_max_size = int(getattr(quick_comm, "qr_max_size", 0) or 0)
+    return qr_max_size <= 0 or tensor_size <= qr_max_size
+
+
+def _try_aiter_quick_allreduce(tensor: torch.Tensor, group: Group):
+    quick_comm = _get_aiter_quick_allreduce_comm(group)
+    if not _can_use_aiter_quick_allreduce(quick_comm, tensor):
+        return None
+    out = quick_comm.quick_all_reduce(tensor)
+    tensor.copy_(out)
+    return tensor
+
+
 def all_reduce(tensor: torch.Tensor, group: Group) -> torch.Tensor:
     """All-reduce a tensor across all ranks in the group.
 
@@ -571,6 +725,11 @@ def all_reduce(tensor: torch.Tensor, group: Group) -> torch.Tensor:
     Returns:
         All-reduced tensor (same as input tensor)
     """
+    if group == Group.TP:
+        quick_result = _try_aiter_quick_allreduce(tensor, group)
+        if quick_result is not None:
+            return quick_result
+
     rocm_rccl.ensure_capture_comm_ready(group == Group.TP)
     if rocm_rccl.should_use_capture_collectives(group == Group.TP):
         return rocm_rccl.capture_all_reduce(tensor, _get_group(group))
@@ -662,7 +821,10 @@ def reduce_scatter(input_tensor: torch.Tensor, group: Group) -> torch.Tensor:
         dtype=input_tensor.dtype,
     )
     torch.distributed.reduce_scatter_tensor(
-        output_tensor, input_tensor, op=torch.distributed.ReduceOp.SUM, group=process_group
+        output_tensor,
+        input_tensor,
+        op=torch.distributed.ReduceOp.SUM,
+        group=process_group,
     )
     return output_tensor
 
