@@ -23,24 +23,16 @@ from flydsl._mlir import ir
 from flydsl._mlir.dialects import llvm as llvm_dialect
 from flydsl._mlir.dialects import math as math_dialect
 from flydsl._mlir.dialects import scf
-from flydsl.compiler.backends.rocm import RocmBackend
 from flydsl.compiler.kernel_function import CompilationContext
 from flydsl.expr import arith, buffer_ops, gpu, range_constexpr, rocdl, vector
 from flydsl.expr.typing import T
 from flydsl.runtime.device import get_rocm_arch as get_hip_arch
 from flydsl.utils.smem_allocator import SmemAllocator, SmemPtr
 
-_orig_pipeline = RocmBackend.pipeline_fragments
-
-
-def _patched_pipeline(self, *, compile_hints=None, **kw):
-    if compile_hints is None:
-        compile_hints = {}
-    frags = _orig_pipeline(self, compile_hints=compile_hints, **kw)
-    return [f.replace("O=2", "O=3") if "rocdl-attach-target" in f else f for f in frags]
-
-
-RocmBackend.pipeline_fragments = _patched_pipeline
+# See flydsl_chunk_gdn_mi308x.py for rationale: the global RocmBackend
+# pipeline_fragments monkey-patch is removed because the O=3 upgrade was a
+# no-op (or microscopic regression) on the measured shapes, and the patch
+# leaked into any other FlyDSL kernel that happened to be imported next.
 
 BT = 64
 K_SIZE = 128
@@ -78,6 +70,7 @@ def build_megakernel(
     ssm_state_dtype=None,
     h_size=H_SIZE,
     hg_size=Hg_SIZE,
+    output_final_state=True,
 ):
     K = K_SIZE
     V = V_SIZE
@@ -284,7 +277,7 @@ def build_megakernel(
                         for ii in range_constexpr(4):
                             dk = (wave_id * 2 + mc) * 16 + (lane // 16) * 4 + ii
                             dv = i_v * BLOCK_DV + nt * 16 + lane % 16
-                            ssm_off = ssm_base + dk * V + dv
+                            ssm_off = ssm_base + dv * K + dk
                             val = v4e(h_vals[mc * NT_BDV + nt], ii)
                             if ssm_state_dtype == torch.bfloat16:
                                 val = bf16_trunc(val)
@@ -360,7 +353,7 @@ def build_megakernel(
                         for ii in range_constexpr(4):
                             dk = (wave_id * 2 + mc) * 16 + (lane // 16) * 4 + ii
                             dv = i_v * BLOCK_DV + nt * 16 + lane % 16
-                            h0_off = h0_base + dk * V + dv
+                            h0_off = h0_base + dv * K + dk
                             h0_vals.append(
                                 buffer_ops.buffer_load(
                                     rsrc_h0, h0_off, vec_width=1, dtype=T.f32
@@ -921,22 +914,25 @@ def build_megakernel(
             yield h_result
 
         # ═══════════ Store final state h → ht ═══════════
-        final_h = list(loop_results)
-        ht_base = i_bh * K * V
-        store_if = scf.IfOp(is_compute, [], has_else=True)
-        with ir.InsertionPoint(store_if.then_block):
-            for mc in range_constexpr(2):
-                for nt in range_constexpr(NT_BDV):
-                    for ii in range_constexpr(4):
-                        dk = (wave_id * 2 + mc) * 16 + (lane // 16) * 4 + ii
-                        dv = i_v * BLOCK_DV + nt * 16 + lane % 16
-                        ht_off = ht_base + dk * V + dv
-                        buffer_ops.buffer_store(
-                            v4e(final_h[mc * NT_BDV + nt], ii), rsrc_ht, ht_off
-                        )
-            scf.YieldOp([])
-        with ir.InsertionPoint(store_if.else_block):
-            scf.YieldOp([])
+        # Compile-time guard: omit the entire ht store IR when the caller does
+        # not request final state, so an empty/dummy ht_ptr is never written.
+        if output_final_state:
+            final_h = list(loop_results)
+            ht_base = i_bh * K * V
+            store_if = scf.IfOp(is_compute, [], has_else=True)
+            with ir.InsertionPoint(store_if.then_block):
+                for mc in range_constexpr(2):
+                    for nt in range_constexpr(NT_BDV):
+                        for ii in range_constexpr(4):
+                            dk = (wave_id * 2 + mc) * 16 + (lane // 16) * 4 + ii
+                            dv = i_v * BLOCK_DV + nt * 16 + lane % 16
+                            ht_off = ht_base + dv * K + dk
+                            buffer_ops.buffer_store(
+                                v4e(final_h[mc * NT_BDV + nt], ii), rsrc_ht, ht_off
+                            )
+                scf.YieldOp([])
+            with ir.InsertionPoint(store_if.else_block):
+                scf.YieldOp([])
 
     @flyc.jit
     def launch(
